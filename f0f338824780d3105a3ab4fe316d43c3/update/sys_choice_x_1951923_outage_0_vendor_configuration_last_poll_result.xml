@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update>
+    <sys_choice action="INSERT_OR_UPDATE" field="last_poll_result" table="x_1951923_outage_0_vendor_configuration" version="3">
+        <sys_choice_set action="INSERT_OR_UPDATE">
+            <element>last_poll_result</element>
+            <name>x_1951923_outage_0_vendor_configuration</name>
+            <sys_class_name>sys_choice_set</sys_class_name>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 17:15:36</sys_created_on>
+            <sys_id>ab8596ef474493105a3ab4fe316d43a1</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_name>last_poll_result</sys_name>
+            <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+            <sys_policy/>
+            <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+            <sys_update_name>sys_choice_x_1951923_outage_0_vendor_configuration_last_poll_result</sys_update_name>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>
+        </sys_choice_set>
+        <sys_choice action="INSERT_OR_UPDATE">
+            <dependent_value/>
+            <element>last_poll_result</element>
+            <hint/>
+            <inactive>false</inactive>
+            <label>Success</label>
+            <language>en</language>
+            <name>x_1951923_outage_0_vendor_configuration</name>
+            <sequence>0</sequence>
+            <synonyms/>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 17:15:36</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>a38596ef474493105a3ab4fe316d43a1</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>
+            <value>success</value>
+        </sys_choice>
+        <sys_choice action="INSERT_OR_UPDATE">
+            <dependent_value/>
+            <element>last_poll_result</element>
+            <hint/>
+            <inactive>false</inactive>
+            <label>HTTP Error</label>
+            <language>en</language>
+            <name>x_1951923_outage_0_vendor_configuration</name>
+            <sequence>1</sequence>
+            <synonyms/>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 17:15:36</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>638596ef474493105a3ab4fe316d43a4</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>
+            <value>http_error</value>
+        </sys_choice>
+        <sys_choice action="INSERT_OR_UPDATE">
+            <dependent_value/>
+            <element>last_poll_result</element>
+            <hint/>
+            <inactive>false</inactive>
+            <label>Invalid Response</label>
+            <language>en</language>
+            <name>x_1951923_outage_0_vendor_configuration</name>
+            <sequence>2</sequence>
+            <synonyms/>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 17:15:36</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>e78596ef474493105a3ab4fe316d43a5</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>
+            <value>invalid_response</value>
+        </sys_choice>
+        <sys_choice action="INSERT_OR_UPDATE">
+            <dependent_value/>
+            <element>last_poll_result</element>
+            <hint/>
+            <inactive>false</inactive>
+            <label>Processing Error</label>
+            <language>en</language>
+            <name>x_1951923_outage_0_vendor_configuration</name>
+            <sequence>3</sequence>
+            <synonyms/>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 17:15:36</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>6f8596ef474493105a3ab4fe316d43a6</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>
+            <value>processing_error</value>
+        </sys_choice>
+    </sys_choice>
+</record_update>

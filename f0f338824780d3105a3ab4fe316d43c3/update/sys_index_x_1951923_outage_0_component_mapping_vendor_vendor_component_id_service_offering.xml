@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_index">
+    <sys_index action="INSERT_OR_UPDATE">
+        <access_method>btree</access_method>
+        <col_name_string>vendor,vendor_component_id,service_offering</col_name_string>
+        <index_col_name>2d1a91db474013105a3ab4fe316d4300,291a51db474013105a3ab4fe316d43ee,a51a91db474013105a3ab4fe316d430c<sys_dictionary element="vendor" name="x_1951923_outage_0_component_mapping">2d1a91db474013105a3ab4fe316d4300</sys_dictionary>
+            <sys_dictionary element="vendor_component_id" name="x_1951923_outage_0_component_mapping">291a51db474013105a3ab4fe316d43ee</sys_dictionary>
+            <sys_dictionary element="service_offering" name="x_1951923_outage_0_component_mapping">a51a91db474013105a3ab4fe316d430c</sys_dictionary>
+        </index_col_name>
+        <logical_table_name>x_1951923_outage_0_component_mapping</logical_table_name>
+        <sys_class_name>sys_index</sys_class_name>
+        <sys_created_by>system</sys_created_by>
+        <sys_created_on>2026-10-25 21:17:16</sys_created_on>
+        <sys_id>0243ce97478413105a3ab4fe316d43df</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>x_1951923_outage_0_component_mapping</sys_name>
+        <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+        <sys_policy/>
+        <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+        <sys_update_name>sys_index_x_1951923_outage_0_component_mapping_vendor_vendor_component_id_service_offering</sys_update_name>
+        <sys_updated_by>system</sys_updated_by>
+        <sys_updated_on>2026-10-25 21:17:16</sys_updated_on>
+        <table display_value="Component Mapping" name="x_1951923_outage_0_component_mapping">f4c8191b474013105a3ab4fe316d43fc</table>
+        <unique_index>true</unique_index>
+    </sys_index>
+</record_update>

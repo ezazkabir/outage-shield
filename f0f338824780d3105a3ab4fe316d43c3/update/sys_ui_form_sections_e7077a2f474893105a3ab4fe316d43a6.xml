@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update>
+    <sys_ui_form_sections form_id="e7077a2f474893105a3ab4fe316d43a6" sys_domain="global" table="x_1951923_outage_0_vendor_configuration" version="3">
+        <sys_ui_form_section action="INSERT_OR_UPDATE">
+            <position>0</position>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 19:41:59</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>f3077a2f474893105a3ab4fe316d43b9</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_overrides/>
+            <sys_ui_form display_value="x_1951923_outage_0_vendor_configuration" name="x_1951923_outage_0_vendor_configuration" sys_domain="global" view="Default view">e7077a2f474893105a3ab4fe316d43a6</sys_ui_form>
+            <sys_ui_section caption="Vendor Details" display_value="Vendor Details" name="x_1951923_outage_0_vendor_configuration" sys_domain="global" view="Default view">a9e7888b47cc5b105a3ab4fe316d4393</sys_ui_section>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 19:41:59</sys_updated_on>
+        </sys_ui_form_section>
+        <sys_ui_form_section action="INSERT_OR_UPDATE">
+            <position>1</position>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 19:41:59</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>3f077a2f474893105a3ab4fe316d43ba</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_overrides/>
+            <sys_ui_form display_value="x_1951923_outage_0_vendor_configuration" name="x_1951923_outage_0_vendor_configuration" sys_domain="global" view="Default view">e7077a2f474893105a3ab4fe316d43a6</sys_ui_form>
+            <sys_ui_section caption="API Configuration" display_value="API Configuration" name="x_1951923_outage_0_vendor_configuration" sys_domain="global" view="Default view">e3077a2f474893105a3ab4fe316d43a1</sys_ui_section>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 19:41:59</sys_updated_on>
+        </sys_ui_form_section>
+        <sys_ui_form_section action="INSERT_OR_UPDATE">
+            <position>2</position>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 19:41:59</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>77077a2f474893105a3ab4fe316d43c1</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_overrides/>
+            <sys_ui_form display_value="x_1951923_outage_0_vendor_configuration" name="x_1951923_outage_0_vendor_configuration" sys_domain="global" view="Default view">e7077a2f474893105a3ab4fe316d43a6</sys_ui_form>
+            <sys_ui_section caption="Polling &amp; Integration Health" display_value="Polling &amp; Integration Health" name="x_1951923_outage_0_vendor_configuration" sys_domain="global" view="Default view">a7077a2f474893105a3ab4fe316d43a3</sys_ui_section>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 19:41:59</sys_updated_on>
+        </sys_ui_form_section>
+        <sys_ui_form_section action="INSERT_OR_UPDATE">
+            <position>3</position>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 19:41:59</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>f3077a2f474893105a3ab4fe316d43c8</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_overrides/>
+            <sys_ui_form display_value="x_1951923_outage_0_vendor_configuration" name="x_1951923_outage_0_vendor_configuration" sys_domain="global" view="Default view">e7077a2f474893105a3ab4fe316d43a6</sys_ui_form>
+            <sys_ui_section caption="System Information" display_value="System Information" name="x_1951923_outage_0_vendor_configuration" sys_domain="global" view="Default view">23077a2f474893105a3ab4fe316d43a5</sys_ui_section>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 19:41:59</sys_updated_on>
+        </sys_ui_form_section>
+        <sys_ui_form action="INSERT_OR_UPDATE">
+            <name>x_1951923_outage_0_vendor_configuration</name>
+            <roles/>
+            <sys_class_name>sys_ui_form</sys_class_name>
+            <sys_created_by>admin</sys_created_by>
+            <sys_created_on>2026-10-26 19:41:58</sys_created_on>
+            <sys_domain>global</sys_domain>
+            <sys_domain_path>/</sys_domain_path>
+            <sys_id>e7077a2f474893105a3ab4fe316d43a6</sys_id>
+            <sys_mod_count>0</sys_mod_count>
+            <sys_name>x_1951923_outage_0_vendor_configuration</sys_name>
+            <sys_overrides/>
+            <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+            <sys_policy/>
+            <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+            <sys_update_name>sys_ui_form_sections_e7077a2f474893105a3ab4fe316d43a6</sys_update_name>
+            <sys_updated_by>admin</sys_updated_by>
+            <sys_updated_on>2026-10-26 19:41:58</sys_updated_on>
+            <sys_user/>
+            <view display_value="Default view" name="NULL">Default view</view>
+            <view_name/>
+        </sys_ui_form>
+    </sys_ui_form_sections>
+</record_update>
