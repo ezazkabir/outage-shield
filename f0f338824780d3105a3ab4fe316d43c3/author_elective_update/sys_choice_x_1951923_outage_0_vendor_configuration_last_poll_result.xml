@@ -6,7 +6,6 @@
             <sys_class_name>sys_choice_set</sys_class_name>
             <sys_created_by>admin</sys_created_by>
             <sys_created_on>2026-10-26 17:15:36</sys_created_on>
-            <sys_id>ab8596ef474493105a3ab4fe316d43a1</sys_id>
             <sys_mod_count>0</sys_mod_count>
             <sys_name>last_poll_result</sys_name>
             <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
@@ -30,7 +29,6 @@
             <sys_created_on>2026-10-26 17:15:36</sys_created_on>
             <sys_domain>global</sys_domain>
             <sys_domain_path>/</sys_domain_path>
-            <sys_id>a38596ef474493105a3ab4fe316d43a1</sys_id>
             <sys_mod_count>0</sys_mod_count>
             <sys_updated_by>admin</sys_updated_by>
             <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>
@@ -50,7 +48,6 @@
             <sys_created_on>2026-10-26 17:15:36</sys_created_on>
             <sys_domain>global</sys_domain>
             <sys_domain_path>/</sys_domain_path>
-            <sys_id>638596ef474493105a3ab4fe316d43a4</sys_id>
             <sys_mod_count>0</sys_mod_count>
             <sys_updated_by>admin</sys_updated_by>
             <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>
@@ -70,7 +67,6 @@
             <sys_created_on>2026-10-26 17:15:36</sys_created_on>
             <sys_domain>global</sys_domain>
             <sys_domain_path>/</sys_domain_path>
-            <sys_id>e78596ef474493105a3ab4fe316d43a5</sys_id>
             <sys_mod_count>0</sys_mod_count>
             <sys_updated_by>admin</sys_updated_by>
             <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>
@@ -90,7 +86,6 @@
             <sys_created_on>2026-10-26 17:15:36</sys_created_on>
             <sys_domain>global</sys_domain>
             <sys_domain_path>/</sys_domain_path>
-            <sys_id>6f8596ef474493105a3ab4fe316d43a6</sys_id>
             <sys_mod_count>0</sys_mod_count>
             <sys_updated_by>admin</sys_updated_by>
             <sys_updated_on>2026-10-26 17:15:36</sys_updated_on>

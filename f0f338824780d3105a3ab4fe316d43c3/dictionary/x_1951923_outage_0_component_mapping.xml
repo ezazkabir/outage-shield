@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?><database>
+    <element attributes="enforce_dot_walk_cross_scope_access=true" db_object_id="f4c8191b474013105a3ab4fe316d43fc" label="Component Mapping" max_length="40" name="x_1951923_outage_0_component_mapping" type="collection">
+        <element label="Vendor Component ID" mandatory="true" max_length="100" name="vendor_component_id" type="string"/>
+        <element label="Vendor" mandatory="true" max_length="32" name="vendor" reference="x_1951923_outage_0_vendor_configuration" type="reference"/>
+        <element label="Replaces Mapping" max_length="32" name="replaces_mapping" reference="x_1951923_outage_0_component_mapping" type="reference"/>
+        <element label="Retired At" max_length="40" name="retired_at" type="glide_date_time"/>
+        <element default="true" label="Active" max_length="255" name="active" type="boolean"/>
+        <element label="Service Offering" mandatory="true" max_length="32" name="service_offering" reference="service_offering" type="reference"/>
+        <element display="true" label="Component Name" mandatory="true" max_length="150" name="component_name" type="string"/>
+        <index name="index">
+            <element name="replaces_mapping"/>
+        </index>
+        <index name="index2">
+            <element name="service_offering"/>
+        </index>
+        <index name="index3" unique="true">
+            <element name="vendor"/>
+            <element name="vendor_component_id"/>
+            <element name="service_offering"/>
+        </index>
+    </element>
+</database>

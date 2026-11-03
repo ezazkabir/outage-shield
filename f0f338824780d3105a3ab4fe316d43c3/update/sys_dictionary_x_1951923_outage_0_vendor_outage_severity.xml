@@ -48,7 +48,6 @@
         <sys_class_name>sys_dictionary</sys_class_name>
         <sys_created_by>admin</sys_created_by>
         <sys_created_on>2026-10-25 18:30:10</sys_created_on>
-        <sys_id>0a0d5d13478013105a3ab4fe316d433d</sys_id>
         <sys_name>Severity</sys_name>
         <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
         <sys_policy/>

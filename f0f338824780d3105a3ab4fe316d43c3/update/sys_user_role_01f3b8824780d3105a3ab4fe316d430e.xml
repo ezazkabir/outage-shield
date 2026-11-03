@@ -4,7 +4,7 @@
         <can_delegate>true</can_delegate>
         <description>Maintain vendor configurations, API endpoints and component mappings</description>
         <elevated_privilege>false</elevated_privilege>
-        <federated_id/>
+        <federated_id>pNDgqrxOphPiua+zUXjkqM/WYPJb7bxLxLcxMzwlQWQ=</federated_id>
         <grantable>true</grantable>
         <includes_roles/>
         <name>x_1951923_outage_0.vendor_manager</name>

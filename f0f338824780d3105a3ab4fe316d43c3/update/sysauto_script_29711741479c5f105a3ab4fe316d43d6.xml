@@ -1,0 +1,341 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sysauto_script">
+    <sysauto_script action="INSERT_OR_UPDATE">
+        <active>false</active>
+        <advanced>true</advanced>
+        <business_calendar/>
+        <condition/>
+        <conditional>false</conditional>
+        <entered_run_end/>
+        <entered_run_start/>
+        <entered_time>1970-01-01 00:00:00</entered_time>
+        <max_drift/>
+        <name>Outage Shield – E2E Test</name>
+        <offset/>
+        <offset_type>0</offset_type>
+        <repeat_every/>
+        <run_as display_value="Outage Shield Automation">a8f25fbc47101f105a3ab4fe316d4351</run_as>
+        <run_as_tz/>
+        <run_dayofmonth>1</run_dayofmonth>
+        <run_dayofweek>1</run_dayofweek>
+        <run_daysofweek/>
+        <run_end/>
+        <run_month>1</run_month>
+        <run_period>1970-01-01 00:05:00</run_period>
+        <run_start>2026-10-30 19:04:21</run_start>
+        <run_time>1970-01-01 08:00:00</run_time>
+        <run_type>on_demand</run_type>
+        <run_weekinmonth>1</run_weekinmonth>
+        <script><![CDATA[
+(function() {
+
+    var p = '[Outage Shield Final Recovery Checks] ';
+    var testId = 'os-e2e-test-001';
+
+    // 1. Safety checks
+
+    if (gs.getUserName() !== 'outage.shield.automation') {
+        gs.error(p + 'STOP | Incorrect execution user');
+        return;
+    }
+
+    if (gs.getProperty(
+        'x_1951923_outage_0.enable_itsm_automation',
+        'false'
+    ) !== 'true') {
+        gs.error(p + 'STOP | ITSM automation disabled');
+        return;
+    }
+
+    var outage = new GlideRecord(
+        'x_1951923_outage_0_vendor_outage'
+    );
+
+    outage.addQuery('external_incident_id', testId);
+    outage.setLimit(2);
+    outage.query();
+
+    if (!outage.next()) {
+        gs.error(p + 'STOP | Test outage missing');
+        return;
+    }
+
+    var outageId = outage.getUniqueValue();
+    var vendorId = outage.getValue('vendor');
+
+    if (outage.next()) {
+        gs.error(p + 'STOP | Duplicate test outages');
+        return;
+    }
+
+    var vendor = new GlideRecord(
+        'x_1951923_outage_0_vendor_configuration'
+    );
+
+    if (!vendor.get(vendorId) ||
+        vendor.getValue('vendor_name') !== 'Cloudflare') {
+        gs.error(p + 'STOP | Vendor mismatch');
+        return;
+    }
+
+    // Only run from the expected starting status.
+
+    if (outage.getValue('status') !== 'investigating') {
+        gs.error(p +
+            'STOP | Expected investigating status, found: ' +
+            outage.getValue('status'));
+        return;
+    }
+
+    // 2. Verify linked test Incident
+
+    var incidentId = outage.getValue('primary_incident');
+    var inc = new GlideRecord('incident');
+
+    if (!inc.get(incidentId) ||
+        inc.getValue('number') !== 'INC0010002' ||
+        inc.getValue('correlation_id') !== 'OS:' + outageId) {
+        gs.error(p + 'STOP | Linked Incident mismatch');
+        return;
+    }
+
+    var originalState = inc.getValue('state');
+    var originalPriority = inc.getValue('priority');
+    var originalMajor =
+        inc.getValue('major_incident_state') || '';
+
+    // Count actual journal entries.
+
+    function countNotes() {
+        var j = new GlideRecord('sys_journal_field');
+        j.addQuery('element_id', incidentId);
+        j.addQuery('element', 'work_notes');
+        j.query();
+        return j.getRowCount();
+    }
+
+    var before = countNotes();
+    var processor = new VendorOutageProcessor();
+
+    // 3. CHECK ONE - Same status, no new note
+
+    var existingIds;
+
+    try {
+        existingIds = JSON.parse(
+            outage.getValue('affected_component_ids') || '[]'
+        );
+        if (!Array.isArray(existingIds)) {
+            throw new Error('Invalid component IDs');
+        }
+    } catch (e) {
+        gs.error(p + 'STOP | ' + e);
+        return;
+    }
+
+    var sameStatus = {
+        externalId: testId,
+        title: outage.getValue('title'),
+        status: 'investigating',
+        severity: outage.getValue('severity'),
+        componentIds: existingIds,
+        latestUpdate: outage.getValue('latest_update') || ''
+    };
+
+    var sameResult;
+
+    try {
+        sameResult = processor.saveIncident(
+            vendorId, sameStatus
+        );
+    } catch (e) {
+        gs.error(p + 'FAIL | Same-status test: ' + e);
+        return;
+    }
+
+    var afterSame = countNotes();
+
+    var check1 =
+        sameResult === 'unchanged' &&
+        afterSame === before;
+
+    gs.info(p +
+        'CHECK 1 - No duplicate: ' +
+        (check1 ? 'PASS' : 'FAIL'));
+
+    if (!check1) {
+        gs.error(p + 'STOP | Duplicate check failed');
+        return;
+    }
+
+    // 4. CHECK THREE - Simulate historical API recovery
+    //
+    // This payload is shaped like the vendor's
+    // historical incidents API response.
+    //
+    // Uses our real processResponse() and saveIncident().
+
+    var now = new GlideDateTime();
+    var isoTime = now.getValue().replace(' ', 'T') + 'Z';
+
+    var savedTimestamp =
+        outage.getValue('vendor_last_updated');
+
+    if (savedTimestamp &&
+        new GlideDateTime(savedTimestamp).getNumericValue() >
+            now.getNumericValue()) {
+
+        gs.error(p + 'STOP | Saved vendor timestamp is newer');
+        return;
+    }
+
+    var historyPayload = JSON.stringify({
+        incidents: [{
+            id: testId,
+            name: outage.getValue('title'),
+            status: 'resolved',
+            impact: outage.getValue('severity'),
+            components: [],
+            updated_at: isoTime,
+            resolved_at: isoTime,
+            incident_updates: [{
+                body:
+                    'Synthetic historical API recovery test.',
+                updated_at: isoTime
+            }]
+        }]
+    });
+
+    var parsed;
+    var firstResult;
+    var secondResult;
+
+    try {
+        parsed = processor.processResponse(historyPayload);
+
+        if (parsed.incidentCount !== 1 ||
+            parsed.incidents[0].externalId !== testId ||
+            parsed.incidents[0].status !== 'resolved') {
+            throw new Error('Historical payload mismatch');
+        }
+
+        firstResult = processor.saveIncident(
+            vendorId, parsed.incidents[0]
+        );
+
+    } catch (e) {
+        gs.error(p + 'FAIL | Historical processing: ' + e);
+        return;
+    }
+
+    var afterRecovery = countNotes();
+
+    // Repeat identical historical response.
+
+    try {
+        secondResult = processor.saveIncident(
+            vendorId, parsed.incidents[0]
+        );
+    } catch (e) {
+        gs.error(p + 'FAIL | Repeat history: ' + e);
+        return;
+    }
+
+    var afterRepeat = countNotes();
+
+    // 5. Verify stored records
+
+    outage.get(outageId);
+    inc.get(incidentId);
+
+    var check2 =
+        inc.getValue('state') === originalState &&
+        inc.getValue('priority') === originalPriority &&
+        (inc.getValue('major_incident_state') || '') ===
+            originalMajor;
+
+    var check3 =
+        firstResult === 'updated' &&
+        secondResult === 'unchanged' &&
+        outage.getValue('status') === 'resolved' &&
+        afterRecovery === before + 1 &&
+        afterRepeat === afterRecovery;
+
+    // Verify the new journal message content.
+
+    var journal = new GlideRecord('sys_journal_field');
+    journal.addQuery('element_id', incidentId);
+    journal.addQuery('element', 'work_notes');
+    journal.orderByDesc('sys_created_on');
+    journal.setLimit(1);
+    journal.query();
+
+    var recoveryMessageFound = false;
+
+    if (journal.next()) {
+        var noteText = journal.getValue('value') || '';
+
+        recoveryMessageFound =
+            noteText.indexOf('Investigating -> Resolved') >= 0 &&
+            noteText.indexOf(testId) >= 0;
+    }
+
+    check3 = check3 && recoveryMessageFound;
+
+    gs.info(p +
+        'CHECK 2 - Incident protected: ' +
+        (check2 ? 'PASS' : 'FAIL'));
+
+    gs.info(p +
+        'CHECK 3 - Historical recovery processing: ' +
+        (check3 ? 'PASS' : 'FAIL'));
+
+    gs.info(p +
+        'Work notes before: ' + before);
+
+    gs.info(p +
+        'Work notes after recovery: ' + afterRecovery);
+
+    gs.info(p +
+        'Work notes after repeat: ' + afterRepeat);
+
+    gs.info(p +
+        'First historical save: ' + firstResult);
+
+    gs.info(p +
+        'Repeat historical save: ' + secondResult);
+
+    gs.info(p +
+        'Incident: ' + inc.getValue('number'));
+
+    gs.info(p +
+        'Incident state: ' + inc.getDisplayValue('state'));
+
+    gs.info(p +
+        'Priority: ' + inc.getDisplayValue('priority'));
+
+    gs.info(p +
+        'Major state: ' +
+        (inc.getValue('major_incident_state') || 'empty'));
+
+    gs.info(p +
+        (check1 && check2 && check3 ? 'PASS' : 'FAIL') +
+        ' | FINAL RECOVERY CHECKS');
+
+})();
+]]></script>
+        <sys_class_name>sysauto_script</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2026-10-31 13:28:13</sys_created_on>
+        <sys_id>29711741479c5f105a3ab4fe316d43d6</sys_id>
+        <sys_mod_count>19</sys_mod_count>
+        <sys_name>Outage Shield – E2E Test</sys_name>
+        <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+        <sys_policy/>
+        <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+        <sys_update_name>sysauto_script_29711741479c5f105a3ab4fe316d43d6</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2026-10-31 18:51:19</sys_updated_on>
+        <time_zone/>
+        <upgrade_safe>false</upgrade_safe>
+    </sysauto_script>
+</record_update>

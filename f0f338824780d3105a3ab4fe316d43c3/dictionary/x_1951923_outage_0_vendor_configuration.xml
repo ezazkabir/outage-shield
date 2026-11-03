@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?><database>
+    <element attributes="enforce_dot_walk_cross_scope_access=true" db_object_id="70e7c88747409b105a3ab4fe316d43f4" label="Vendor Configuration" max_length="40" name="x_1951923_outage_0_vendor_configuration" type="collection">
+        <element label="Last Poll Attempt At" max_length="40" name="last_poll_attempt_at" read_only="true" read_only_option="display_read_only" type="glide_date_time"/>
+        <element label="Last Successful Poll At" max_length="255" name="last_successful_poll_at" read_only="true" read_only_option="display_read_only" type="glide_date_time"/>
+        <element label="Summary API Endpoint" mandatory="true" max_length="1024" name="summary_api_endpoint" type="url"/>
+        <element label="Last Overall Indicator" max_length="40" name="last_overall_indicator" read_only="true" read_only_option="display_read_only" type="string"/>
+        <element label="Last Error" max_length="1000" name="last_error" read_only="true" read_only_option="display_read_only" type="string"/>
+        <element label="Last HTTP Status" max_length="40" name="last_http_status" read_only="true" read_only_option="display_read_only" type="integer"/>
+        <element label="Incidents API Endpoint" mandatory="true" max_length="1024" name="incidents_api_endpoint" type="url"/>
+        <element label="Last Active Incident Count" max_length="40" name="last_active_incident_count" read_only="true" read_only_option="display_read_only" type="integer"/>
+        <element display="true" label="Vendor Name" mandatory="true" max_length="40" name="vendor_name" type="string"/>
+        <element choice="1" label="API Format" mandatory="true" max_length="40" name="api_format" type="choice">
+            <choice>
+                <element inactive_on_update="false" label="Atlassian Statuspage" sequence="0" value="atlassian_statuspage"/>
+            </choice>
+        </element>
+        <element default="true" label="Active" max_length="40" name="active" type="boolean"/>
+        <element choice="3" label="Last Poll Result" max_length="40" name="last_poll_result" read_only="true" read_only_option="display_read_only" type="choice">
+            <choice>
+                <element inactive_on_update="false" label="HTTP Error" sequence="1" value="http_error"/>
+                <element inactive_on_update="false" label="Processing Error" sequence="3" value="processing_error"/>
+                <element inactive_on_update="false" label="Success" sequence="0" value="success"/>
+                <element inactive_on_update="false" label="Invalid Response" sequence="2" value="invalid_response"/>
+            </choice>
+        </element>
+        <index name="index" unique="true">
+            <element name="vendor_name"/>
+        </index>
+    </element>
+</database>

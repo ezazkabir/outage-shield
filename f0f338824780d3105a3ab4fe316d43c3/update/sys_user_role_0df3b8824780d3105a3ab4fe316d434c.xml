@@ -4,7 +4,7 @@
         <can_delegate>true</can_delegate>
         <description>Full administration of Outage Shield</description>
         <elevated_privilege>false</elevated_privilege>
-        <federated_id/>
+        <federated_id>78bB0h9XmF5UZ9JUEn3k3bzt60uZbgj8dl3MKo3dTNY=</federated_id>
         <grantable>true</grantable>
         <includes_roles/>
         <name>x_1951923_outage_0.admin</name>

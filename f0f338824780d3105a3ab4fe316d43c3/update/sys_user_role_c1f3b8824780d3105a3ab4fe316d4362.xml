@@ -4,7 +4,7 @@
         <can_delegate>true</can_delegate>
         <description>Access to permitted Outage Shield functionality</description>
         <elevated_privilege>false</elevated_privilege>
-        <federated_id/>
+        <federated_id>+qSDRB7HUqHoq0HuJSoeNKy8DzEU2aLqWKWzRPFjfI8=</federated_id>
         <grantable>true</grantable>
         <includes_roles/>
         <name>x_1951923_outage_0.user</name>

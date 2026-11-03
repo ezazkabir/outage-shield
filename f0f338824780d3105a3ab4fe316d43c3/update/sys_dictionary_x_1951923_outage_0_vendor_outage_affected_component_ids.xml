@@ -48,7 +48,6 @@
         <sys_class_name>sys_dictionary</sys_class_name>
         <sys_created_by>admin</sys_created_by>
         <sys_created_on>2026-10-27 13:39:36</sys_created_on>
-        <sys_id>55bde637478417105a3ab4fe316d43cc</sys_id>
         <sys_name>Affected Component IDs</sys_name>
         <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
         <sys_policy/>

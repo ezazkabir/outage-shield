@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?><database>
+    <element attributes="enforce_dot_walk_cross_scope_access=true" db_object_id="69cad51f474013105a3ab4fe316d43d6" label="Vendor Outage" max_length="40" name="x_1951923_outage_0_vendor_outage" type="collection">
+        <element label="External Incident ID" mandatory="true" max_length="100" name="external_incident_id" type="string"/>
+        <element choice="1" label="Severity" max_length="40" name="severity" type="choice">
+            <choice>
+                <element inactive_on_update="false" label="critical" sequence="2" value="critical"/>
+                <element inactive_on_update="false" label="minor" sequence="0" value="minor"/>
+                <element inactive_on_update="false" label="major" sequence="1" value="major"/>
+            </choice>
+        </element>
+        <element label="Status" mandatory="true" max_length="50" name="status" type="string"/>
+        <element label="Latest Update" max_length="4000" name="latest_update" type="string"/>
+        <element label="Affected Component IDs" max_length="4000" name="affected_component_ids" type="string"/>
+        <element label="Primary Incident" max_length="32" name="primary_incident" reference="incident" type="reference"/>
+        <element label="Vendor" mandatory="true" max_length="32" name="vendor" reference="x_1951923_outage_0_vendor_configuration" type="reference"/>
+        <element label="Reported At" max_length="40" name="reported_at" type="glide_date_time"/>
+        <element label="Vendor Last Updated" max_length="40" name="vendor_last_updated" type="glide_date_time"/>
+        <element label="Title" mandatory="true" max_length="255" name="title" type="string"/>
+        <element label="Vendor Resolved At" max_length="40" name="vendor_resolved_at" type="glide_date_time"/>
+        <index name="index">
+            <element name="primary_incident"/>
+        </index>
+        <index name="index2" unique="true">
+            <element name="vendor"/>
+            <element name="external_incident_id"/>
+        </index>
+    </element>
+</database>

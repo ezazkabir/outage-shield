@@ -4,7 +4,7 @@
         <can_delegate>true</can_delegate>
         <description/>
         <elevated_privilege>false</elevated_privilege>
-        <federated_id/>
+        <federated_id>CvOzhq5kAjXjjkqsbKM+3xfqfpiW32rGe3yXnX1uNvk=</federated_id>
         <grantable>true</grantable>
         <includes_roles/>
         <name>x_1951923_outage_0.advisory_user</name>

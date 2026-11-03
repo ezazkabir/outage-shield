@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?><database>
+    <element attributes="enforce_dot_walk_cross_scope_access=true" db_object_id="269d1193478013105a3ab4fe316d4355" label="Outage Service Offering" max_length="40" name="x_1951923_outage_0_outage_service_offering" type="collection">
+        <element label="Service Offering" mandatory="true" max_length="32" name="service_offering" reference="service_offering" type="reference"/>
+        <element label="Vendor Outage" mandatory="true" max_length="32" name="vendor_outage" reference="x_1951923_outage_0_vendor_outage" type="reference"/>
+        <element label="Current Potential Impact" max_length="255" name="current_potential_impact" type="boolean"/>
+        <index name="index">
+            <element name="service_offering"/>
+        </index>
+        <index name="index2" unique="true">
+            <element name="vendor_outage"/>
+            <element name="service_offering"/>
+        </index>
+    </element>
+</database>
