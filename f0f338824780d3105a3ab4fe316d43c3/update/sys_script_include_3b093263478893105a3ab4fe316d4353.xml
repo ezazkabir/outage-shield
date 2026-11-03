@@ -1,0 +1,1315 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_1951923_outage_0.VendorStatusPoller</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>Orchestrates scheduled polling of configured SaaS vendor status APIs, processes responses through VendorOutageProcessor, and records integration health and errors.</description>
+        <mobile_callable>false</mobile_callable>
+        <name>VendorStatusPoller</name>
+        <sandbox_callable>false</sandbox_callable>
+        <script><![CDATA[var VendorStatusPoller = Class.create();
+
+VendorStatusPoller.prototype = {
+
+    initialize: function() {
+    },
+
+    // =========================================================
+    // 1. Find and process all active vendors
+    // =========================================================
+
+    pollAll: function() {
+
+        var vendors = new GlideRecord(
+            'x_1951923_outage_0_vendor_configuration'
+        );
+
+        vendors.addQuery('active', true);
+        vendors.query();
+
+        while (vendors.next()) {
+            this.pollVendor(vendors);
+        }
+    },
+
+    // =========================================================
+    // 2. Poll an individual vendor
+    // =========================================================
+
+    pollVendor: function(vendor) {
+
+        var vendorName = vendor.getValue('vendor_name');
+        var vendorId = vendor.getUniqueValue();
+        var pollResult = 'processing_error';
+
+        // Baseline captured before incident records are changed.
+        // Notifications only fire for meaningful, successful changes.
+        var notificationBefore = null;
+
+        vendor.setValue(
+            'last_poll_attempt_at',
+            new GlideDateTime().getValue()
+        );
+
+        try {
+
+            gs.info(
+                vendorName +
+                ' | ITSM automation: ' +
+                (this.isITSMAutomationEnabled()
+                    ? 'ENABLED'
+                    : 'DISABLED (preview only)')
+            );
+
+            // 3. Validate Summary API configuration
+
+            var endpoint = vendor.getValue(
+                'summary_api_endpoint'
+            );
+
+            if (vendor.getValue('api_format') !==
+                'atlassian_statuspage') {
+
+                throw new Error('Unsupported API format');
+            }
+
+            if (!endpoint ||
+                endpoint.indexOf('https://') !== 0) {
+
+                throw new Error('Invalid HTTPS API endpoint');
+            }
+
+            // 4. Fetch latest vendor Summary API
+
+            pollResult = 'http_error';
+
+            var request = new sn_ws.RESTMessageV2();
+
+            request.setHttpMethod('get');
+            request.setEndpoint(endpoint);
+            request.setRequestHeader(
+                'Accept',
+                'application/json'
+            );
+            request.setHttpTimeout(15000);
+
+            var response = request.execute();
+            var httpStatus = response.getStatusCode();
+
+            vendor.setValue('last_http_status', httpStatus);
+
+            if (httpStatus != 200) {
+
+                throw new Error(
+                    'HTTP status: ' + httpStatus
+                );
+            }
+
+            // 5. Parse and validate live API response
+
+            pollResult = 'invalid_response';
+
+            var responseBody = response.getBody();
+
+            var processor = new VendorOutageProcessor();
+            var result = processor.processResponse(
+                responseBody
+            );
+
+            var data = JSON.parse(responseBody);
+
+            if (!data.status || !data.status.indicator) {
+
+                throw new Error(
+                    'Missing vendor status indicator'
+                );
+            }
+
+            for (var i = 0;
+                i < result.incidents.length;
+                i++) {
+
+                var incident = result.incidents[i];
+
+                if (!incident.externalId ||
+                    !incident.title ||
+                    !incident.status) {
+
+                    throw new Error(
+                        'Incomplete vendor incident'
+                    );
+                }
+            }
+
+            // Snapshot the existing Service Offering and outage state
+            // BEFORE saveIncident() and reconciliation change records.
+            notificationBefore = this.captureServiceNotificationState(
+                vendorId
+            );
+
+            // 6. Save current vendor incidents
+            // Historical component IDs remain cumulative.
+
+            pollResult = 'processing_error';
+
+            var inserted = 0;
+            var updated = 0;
+
+            for (var j = 0;
+                j < result.incidents.length;
+                j++) {
+
+                var action = processor.saveIncident(
+                    vendorId,
+                    result.incidents[j]
+                );
+
+                if (action === 'inserted') {
+
+                    inserted++;
+
+                } else if (action === 'updated') {
+
+                    updated++;
+                }
+            }
+
+            // 7. Reconcile saved incidents with vendor history
+
+            var reconciled = this.reconcileSavedIncidents(
+                vendor,
+                processor
+            );
+
+            gs.info(
+                vendorName +
+                ' | Historical incidents reconciled: ' +
+                reconciled
+            );
+
+            // =================================================
+            // 8. LIVE operational assessment
+            // =================================================
+            //
+            // Use current Summary API component statuses,
+            // not cumulative historical component IDs.
+            //
+            // ITSM execution is controlled separately by
+            // the enable_itsm_automation System Property.
+            // =================================================
+
+            // Current impact is assessed per Vendor Outage and
+            // Service Offering, not from historical component IDs.
+            // The complete Summary response determines the desired
+            // set; relationships are synchronized after the loop.
+            var currentOfferingPairs = {};
+
+            for (var k = 0;
+                k < result.incidents.length;
+                k++) {
+
+                var currentIncident = result.incidents[k];
+
+                // Locate its saved Vendor Outage.
+
+                var outage = new GlideRecord(
+                    'x_1951923_outage_0_vendor_outage'
+                );
+
+                outage.addQuery('vendor', vendorId);
+                outage.addQuery(
+                    'external_incident_id',
+                    currentIncident.externalId
+                );
+                outage.setLimit(1);
+                outage.query();
+
+                if (!outage.next()) {
+
+                    throw new Error(
+                        'Saved Vendor Outage not found: ' +
+                        currentIncident.externalId
+                    );
+                }
+
+                var outageId = outage.getUniqueValue();
+
+                // Stage 1: Current live component assessment
+
+                var assessment = processor.assessLiveImpact(
+                    outageId,
+                    currentIncident
+                );
+
+                // Advisory state: collect offerings supported by
+                // currently degraded vendor components. This also
+                // includes Low-risk outages without an ITSM Incident.
+                if (assessment.classification ===
+                    'potential_impact') {
+
+                    var affectedOfferings =
+                        assessment.offerings || [];
+
+                    for (var a = 0;
+                        a < affectedOfferings.length;
+                        a++) {
+
+                        var offeringId = affectedOfferings[a].sysId;
+
+                        if (!offeringId) {
+                            continue;
+                        }
+
+                        var pairKey =
+                            'id:' + outageId + ':' + offeringId;
+
+                        currentOfferingPairs[pairKey] = {
+                            outageId: outageId,
+                            offeringId: offeringId
+                        };
+                    }
+                }
+
+                // Stage 2: Business risk
+
+                var businessRisk = null;
+
+                if (assessment.classification ===
+                    'potential_impact') {
+
+                    businessRisk =
+                        processor.assessBusinessRisk(
+                            assessment
+                        );
+                }
+
+                // Stage 3: Operational decision
+
+                var decision =
+                    processor.determineOperationalAction(
+                        assessment,
+                        businessRisk
+                    );
+
+                // Log live impact assessment.
+
+                gs.info(
+                    vendorName +
+                    ' | Live assessment: ' +
+                    assessment.externalIncidentId +
+                    ' | Vendor status: ' +
+                    assessment.vendorStatus +
+                    ' | Classification: ' +
+                    assessment.classification +
+                    ' | Current degraded components: ' +
+                    assessment.currentAffectedComponentIds.length +
+                    ' | Uncertain components: ' +
+                    assessment.uncertainComponentIds.length
+                );
+
+                // Log overall business risk.
+
+                if (businessRisk) {
+
+                    gs.info(
+                        vendorName +
+                        ' | Business risk: ' +
+                        assessment.externalIncidentId +
+                        ' | Overall: ' +
+                        businessRisk.overallRisk +
+                        ' | Highest known: ' +
+                        (businessRisk.highestKnownRisk ||
+                            'none')
+                    );
+
+                    for (var m = 0;
+                        m < businessRisk.offerings.length;
+                        m++) {
+
+                        var offering =
+                            businessRisk.offerings[m];
+
+                        gs.info(
+                            vendorName +
+                            ' | Offering: ' +
+                            offering.name +
+                            ' | Criticality: ' +
+                            (offering.criticalityValue ||
+                                'missing') +
+                            ' | Risk: ' + offering.risk +
+                            ' | Reason: ' + offering.reason
+                        );
+                    }
+                }
+
+                // Log the operational recommendation.
+
+                gs.info(
+                    vendorName +
+                    ' | Operational decision: ' +
+                    assessment.externalIncidentId +
+                    ' | Action: ' + decision.action +
+                    ' | Effective risk: ' +
+                    (decision.effectiveRisk || 'none') +
+                    ' | Suggested priority: ' +
+                    (decision.suggestedPriority || 'none') +
+                    ' | Propose Major: ' +
+                    decision.proposeMajorIncident +
+                    ' | Manual review: ' +
+                    decision.requiresManualReview +
+                    ' | Current verification required: ' +
+                    decision.requiresCurrentComponentVerification
+                );
+
+                gs.info(
+                    vendorName +
+                    ' | Decision reason: ' +
+                    decision.reason
+                );
+
+                // =============================================
+                // NEW: Stage 4 - Controlled ITSM execution
+                // =============================================
+                //
+                // DISABLED: Preview only, no Incident writes.
+                // ENABLED: Execute eligible Incident actions.
+                //
+                // Historical reconciliation never invokes
+                // this method.
+                // =============================================
+
+                this.processLiveITSMDecision(
+                    processor,
+                    vendorName,
+                    outageId,
+                    assessment,
+                    businessRisk,
+                    decision
+                );
+            }
+
+            // Stage 5: Sync current potential impact at Service
+            // Offering level. A successful empty Summary response
+            // clears previous flags for this vendor. If any API or
+            // assessment stage failed, the sync is not attempted.
+            var advisorySync = this.syncAdvisoryOfferingLinks(
+                vendorId,
+                currentOfferingPairs
+            );
+
+            gs.info(
+                '[Outage Shield] ' + vendorName +
+                ' | Advisory links created: ' +
+                advisorySync.created +
+                ' | Activated: ' + advisorySync.activated +
+                ' | Cleared: ' + advisorySync.cleared
+            );
+
+            // 9. Record successful polling
+
+            vendor.setValue(
+                'last_successful_poll_at',
+                new GlideDateTime().getValue()
+            );
+
+            vendor.setValue(
+                'last_active_incident_count',
+                result.incidentCount
+            );
+
+            vendor.setValue(
+                'last_overall_indicator',
+                data.status.indicator
+            );
+
+            vendor.setValue('last_error', '');
+
+            pollResult = 'success';
+
+            gs.info(
+                vendorName +
+                ' | Incidents: ' + result.incidentCount +
+                ' | Inserted: ' + inserted +
+                ' | Updated: ' + updated +
+                ' | Overall: ' + data.status.indicator
+            );
+
+        } catch (e) {
+
+            // 10. Record polling or processing errors
+
+            vendor.setValue(
+                'last_error',
+                String(e.message || e)
+            );
+
+            gs.error(
+                vendorName + ' polling failed: ' + e
+            );
+
+        } finally {
+
+            // 11. Save polling health information
+
+            vendor.setValue('last_poll_result', pollResult);
+            var vendorSaveId = vendor.update();
+
+            gs.info(
+                vendorName +
+                ' | Poll result: ' + pollResult
+            );
+
+            // Event delivery is independent of Incident automation.
+            // Queue only once the Summary poll, processing, advisory
+            // sync and vendor health-record persistence succeeded.
+            if (pollResult === 'success' &&
+                notificationBefore !== null && vendorSaveId) {
+
+                try {
+                    var eventCounts = this.queueServiceStatusEvents(
+                        vendorId,
+                        vendorName,
+                        notificationBefore
+                    );
+
+                    gs.info(
+                        '[Outage Shield] ' + vendorName +
+                        ' | Service status events | Initial: ' +
+                        eventCounts.initial +
+                        ' | Updated: ' + eventCounts.update +
+                        ' | Cleared: ' + eventCounts.cleared +
+                        ' | Event batches: ' + eventCounts.queued +
+                        ' | No subscribers: ' +
+                        eventCounts.skippedNoSubscribers
+                    );
+
+                } catch (eventError) {
+                    gs.error(
+                        '[Outage Shield] ' + vendorName +
+                        ' | Service status event queuing failed: ' +
+                        eventError
+                    );
+                }
+
+            } else if (pollResult === 'success' && !vendorSaveId) {
+
+                gs.error(
+                    '[Outage Shield] ' + vendorName +
+                    ' | Event queuing skipped: vendor record ' +
+                    'could not be saved.'
+                );
+            }
+        }
+    },
+
+    // =========================================================
+    // 12. NEW: Read the ITSM automation switch
+    // =========================================================
+
+    isITSMAutomationEnabled: function() {
+
+        var value = gs.getProperty(
+            'x_1951923_outage_0.enable_itsm_automation',
+            'false'
+        );
+
+        // Fail closed: only an explicit "true" enables writes.
+        return String(value).toLowerCase() === 'true';
+    },
+
+    // =========================================================
+    // 13. NEW: Execute or preview live ITSM decisions
+    // =========================================================
+
+    processLiveITSMDecision: function(
+        processor,
+        vendorName,
+        outageId,
+        assessment,
+        businessRisk,
+        decision
+    ) {
+
+        var action = String(decision.action || '');
+
+        // Only these actions require Incident automation.
+        // Monitoring, recovery, mapping review and other
+        // decisions remain outside this execution method.
+
+        if (action !== 'create_incident' &&
+            action !== 'create_incident_and_propose_major') {
+
+            return;
+        }
+
+        // -----------------------------------------------------
+        // Fail-closed eligibility checks
+        // -----------------------------------------------------
+
+        var eligible =
+            assessment &&
+            assessment.source === 'live_summary' &&
+            assessment.classification === 'potential_impact' &&
+            assessment.requiresManualReview !== true &&
+            assessment.currentAffectedComponentIds &&
+            assessment.currentAffectedComponentIds.length > 0 &&
+            businessRisk &&
+            businessRisk.needsReview !== true &&
+            decision.requiresManualReview !== true &&
+            decision.requiresCurrentComponentVerification !== true;
+
+        if (!eligible) {
+
+            gs.warn(
+                vendorName +
+                ' | ITSM action withheld: ' +
+                'Live assessment or business risk ' +
+                'requires verification/review. ' +
+                'Outage: ' + outageId
+            );
+
+            return;
+        }
+
+        // Only recognised risk levels permit execution.
+
+        var risk = String(
+            businessRisk.overallRisk || ''
+        ).toLowerCase();
+
+        if (risk !== 'medium' &&
+            risk !== 'high' &&
+            risk !== 'very_high') {
+
+            gs.warn(
+                vendorName +
+                ' | ITSM action withheld: ' +
+                'Ineligible business risk: ' + risk
+            );
+
+            return;
+        }
+
+        // Confirm that the proposed action agrees
+        // with the calculated risk.
+
+        var expectedAction =
+            risk === 'very_high'
+                ? 'create_incident_and_propose_major'
+                : 'create_incident';
+
+        if (action !== expectedAction) {
+
+            gs.warn(
+                vendorName +
+                ' | ITSM action withheld: ' +
+                'Risk and operational decision disagree.'
+            );
+
+            return;
+        }
+
+        // Confirm this assessment belongs to the
+        // Vendor Outage being processed.
+
+        if (businessRisk.outageSysId &&
+            String(businessRisk.outageSysId) !==
+                String(outageId)) {
+
+            throw new Error(
+                'Business risk belongs to another Vendor Outage'
+            );
+        }
+
+        // -----------------------------------------------------
+        // Preview or actual Incident execution
+        // -----------------------------------------------------
+
+        // Re-read property immediately before execution.
+        var enabled = this.isITSMAutomationEnabled();
+
+        var incidentResult =
+            processor.executeIncidentAction(
+                assessment,
+                businessRisk,
+                {apply: enabled}
+            );
+
+        if (!incidentResult) {
+
+            throw new Error(
+                'Incident execution returned no result'
+            );
+        }
+
+        gs.info(
+            vendorName +
+            ' | ITSM ' +
+            (enabled ? 'EXECUTION' : 'PREVIEW') +
+            ' | Outage: ' + outageId +
+            ' | Risk: ' + risk +
+            ' | Operation: ' +
+            (incidentResult.operation || 'unspecified') +
+            ' | Message: ' +
+            (incidentResult.message || '')
+        );
+
+        // Disabled means no Incident updates and
+        // no Major Incident proposal attempts.
+
+        if (!enabled) {
+
+            gs.info(
+                vendorName +
+                ' | ITSM writes disabled by System Property'
+            );
+
+            return;
+        }
+
+        // -----------------------------------------------------
+        // Very High: Native Major Incident proposal
+        // -----------------------------------------------------
+
+        if (action !==
+            'create_incident_and_propose_major') {
+
+            return;
+        }
+
+        if (decision.proposeMajorIncident !== true) {
+
+            throw new Error(
+                'Very High action lacks Major Incident ' +
+                'proposal authorisation'
+            );
+        }
+
+        // The Incident method should have created/reused
+        // and linked the primary Incident first.
+
+        var latestOutage = new GlideRecord(
+            'x_1951923_outage_0_vendor_outage'
+        );
+
+        if (!latestOutage.get(outageId) ||
+            !latestOutage.getValue('primary_incident')) {
+
+            throw new Error(
+                'Primary Incident not linked after execution; ' +
+                'Major Incident proposal not attempted'
+            );
+        }
+
+        // This method already protects proposed,
+        // accepted, rejected and other handled states.
+
+        var proposalResult =
+            processor.submitMajorIncidentProposal(
+                assessment,
+                businessRisk,
+                {apply: true}
+            );
+
+        if (!proposalResult) {
+
+            throw new Error(
+                'Major Incident proposal returned no result'
+            );
+        }
+
+        gs.info(
+            vendorName +
+            ' | Major Incident proposal' +
+            ' | Outage: ' + outageId +
+            ' | Operation: ' +
+            (proposalResult.operation || 'unspecified') +
+            ' | Message: ' +
+            (proposalResult.message || '')
+        );
+    },
+
+    // =========================================================
+    // 14. Synchronize current potential impact on existing
+    //     Outage-Service Offering relationships.
+    // =========================================================
+    // An existing link represents historical association and
+    // must never be deleted simply because impact has ended.
+    // This method only updates the current-impact flag and
+    // inserts missing historical relationships when relevant.
+    // =========================================================
+
+    syncAdvisoryOfferingLinks: function(vendorId, currentPairs) {
+
+        var relationshipTable =
+            'x_1951923_outage_0_outage_service_offering';
+
+        var outageTable =
+            'x_1951923_outage_0_vendor_outage';
+
+        if (!vendorId || !currentPairs) {
+            throw new Error('Missing advisory sync input');
+        }
+
+        var fieldCheck = new GlideRecord(relationshipTable);
+
+        if (!fieldCheck.isValid() ||
+            !fieldCheck.isValidField(
+                'current_potential_impact')) {
+
+            throw new Error(
+                'Outage Shield current potential impact ' +
+                'relationship field is missing'
+            );
+        }
+
+        var result = {
+            created: 0,
+            activated: 0,
+            cleared: 0
+        };
+
+        var existingPairs = {};
+
+        // Include all historical Vendor Outages for this vendor
+        // so stale advisory flags are cleared after recovery,
+        // or when an outage disappears from the Summary API.
+        var outages = new GlideRecord(outageTable);
+        outages.addQuery('vendor', vendorId);
+        outages.query();
+
+        while (outages.next()) {
+
+            var outageId = outages.getUniqueValue();
+            var links = new GlideRecord(relationshipTable);
+            links.addQuery('vendor_outage', outageId);
+            links.query();
+
+            while (links.next()) {
+
+                var offeringId =
+                    links.getValue('service_offering');
+
+                var key = 'id:' + outageId + ':' + offeringId;
+                existingPairs[key] = true;
+
+                var shouldBeActive =
+                    currentPairs.hasOwnProperty(key);
+
+                var rawActive = String(
+                    links.getValue('current_potential_impact') || ''
+                ).toLowerCase();
+
+                var isActive =
+                    rawActive === '1' || rawActive === 'true';
+
+                // Avoid writes during unchanged five-minute polls.
+                if (shouldBeActive === isActive) {
+                    continue;
+                }
+
+                links.setValue(
+                    'current_potential_impact',
+                    shouldBeActive ? '1' : '0'
+                );
+
+                if (!links.update()) {
+                    throw new Error(
+                        'Failed to update advisory relationship'
+                    );
+                }
+
+                if (shouldBeActive) {
+                    result.activated++;
+                } else {
+                    result.cleared++;
+                }
+            }
+        }
+
+        // If a newly affected offering has no historical
+        // relationship yet, create one with current impact true.
+        for (var pairKey in currentPairs) {
+
+            if (!currentPairs.hasOwnProperty(pairKey) ||
+                existingPairs[pairKey]) {
+                continue;
+            }
+
+            var pair = currentPairs[pairKey];
+            var newLink = new GlideRecord(relationshipTable);
+            newLink.initialize();
+
+            newLink.setValue('vendor_outage', pair.outageId);
+            newLink.setValue(
+                'service_offering',
+                pair.offeringId
+            );
+            newLink.setValue(
+                'current_potential_impact',
+                '1'
+            );
+
+            if (!newLink.insert()) {
+                throw new Error(
+                    'Failed to create advisory relationship'
+                );
+            }
+
+            result.created++;
+        }
+
+        return result;
+    },
+
+    // =========================================================
+    // 15. Capture Service Offering notification state
+    // =========================================================
+    // Snapshot the current link state and vendor outage details.
+    // Call before saveIncident() and after the advisory sync to
+    // identify changes even when the link remains active.
+    // =========================================================
+
+    captureServiceNotificationState: function(vendorId) {
+
+        if (!vendorId) {
+            throw new Error('Missing vendor ID for notification state');
+        }
+
+        var outageTable =
+            'x_1951923_outage_0_vendor_outage';
+
+        var relationshipTable =
+            'x_1951923_outage_0_outage_service_offering';
+
+        var snapshot = {};
+        var outages = new GlideRecord(outageTable);
+        outages.addQuery('vendor', vendorId);
+        outages.query();
+
+        while (outages.next()) {
+
+            var outageId = outages.getUniqueValue();
+            var status = String(outages.getValue('status') || '');
+            var severity = String(outages.getValue('severity') || '');
+            var latestUpdate = String(
+                outages.getValue('latest_update') || ''
+            );
+
+            var links = new GlideRecord(relationshipTable);
+            links.addQuery('vendor_outage', outageId);
+            links.query();
+
+            while (links.next()) {
+
+                var linkId = links.getUniqueValue();
+                var rawFlag = String(
+                    links.getValue('current_potential_impact') || ''
+                ).toLowerCase();
+
+                snapshot[linkId] = {
+                    linkId: linkId,
+                    outageId: outageId,
+                    offeringId: links.getValue('service_offering'),
+                    active: rawFlag === 'true' || rawFlag === '1',
+                    status: status,
+                    severity: severity,
+                    latestUpdate: latestUpdate
+                };
+            }
+        }
+
+        return snapshot;
+    },
+
+    // =========================================================
+    // 16. Resolve subscribed users for a Service Offering
+    // =========================================================
+    // The native ServiceNow subscription M2M table has been
+    // verified in this instance:
+    //     service_subscribe_sys_user
+    //     service_offering -> sys_user
+    //
+    // Return eligible sys_user sys_ids, NOT email addresses.
+    // ServiceNow's "Event parm 1 contains recipient" option
+    // resolves these sys_ids into email recipients.
+    // =========================================================
+
+    getServiceOfferingRecipientIds: function(offeringId) {
+
+        if (!offeringId) {
+            throw new Error('Missing Service Offering for recipients');
+        }
+
+        var subscriptions = new GlideRecord(
+            'service_subscribe_sys_user'
+        );
+
+        // Fail closed rather than inadvertently mailing other users.
+        if (!subscriptions.isValid() ||
+            !subscriptions.isValidField('service_offering') ||
+            !subscriptions.isValidField('sys_user')) {
+
+            throw new Error(
+                'Service Offering subscription table/fields unavailable'
+            );
+        }
+
+        subscriptions.addQuery('service_offering', offeringId);
+        subscriptions.query();
+
+        var recipients = [];
+        var seen = {};
+
+        while (subscriptions.next()) {
+
+            var userId = String(
+                subscriptions.getValue('sys_user') || ''
+            );
+
+            // Ignore blank, malformed and duplicate references.
+            if (!/^[0-9a-f]{32}$/i.test(userId) || seen[userId]) {
+                continue;
+            }
+
+            var user = new GlideRecord('sys_user');
+
+            if (!user.get(userId)) {
+                continue;
+            }
+
+            var active = String(
+                user.getValue('active') || ''
+            ).toLowerCase();
+
+            if (active !== '1' && active !== 'true') {
+                continue;
+            }
+
+            var emailAddress = String(
+                user.getValue('email') || ''
+            ).replace(/^\s+|\s+$/g, '');
+
+            // No usable address: omit rather than queue a user who
+            // cannot receive the notification.
+            if (!emailAddress || emailAddress.indexOf('@') < 1) {
+                continue;
+            }
+
+            seen[userId] = true;
+            recipients.push(userId);
+        }
+
+        return recipients;
+    },
+
+    // =========================================================
+    // 17. Queue one logical update per affected Service Offering
+    // =========================================================
+    // initial: inactive/new -> actively impacted
+    // update:  actively impacted and outage status, severity or
+    //          latest update changed
+    // cleared: actively impacted -> inactive
+    // unchanged records produce NO event.
+    //
+    // Event parameters:
+    //   parm1 = comma-separated subscribed sys_user sys_ids
+    //   parm2 = JSON with reason and outage snapshot
+    //
+    // Limit each parm1 recipient batch to 25 sys_ids so the
+    // comma-separated value stays below 1,000 characters.
+    // With >25 recipients, multiple otherwise-identical events
+    // are queued, each reaching a distinct recipient batch.
+    // No subscribers => no email event is queued.
+    // =========================================================
+
+    queueServiceStatusEvents: function(
+        vendorId,
+        vendorName,
+        previousState
+    ) {
+
+        var eventName =
+            'x_1951923_outage_0.service_status_update';
+
+        var relationshipTable =
+            'x_1951923_outage_0_outage_service_offering';
+
+        var currentState = this.captureServiceNotificationState(
+            vendorId
+        );
+
+        var counts = {
+            initial: 0,
+            update: 0,
+            cleared: 0,
+            queued: 0,
+            skippedNoSubscribers: 0
+        };
+
+        // Multiple outages can affect the same offering in one poll.
+        // Resolve its subscribers once per vendor run.
+        var recipientCache = {};
+        var recipientsPerEvent = 25;
+
+        for (var linkId in currentState) {
+
+            if (!currentState.hasOwnProperty(linkId)) {
+                continue;
+            }
+
+            var now = currentState[linkId];
+            var before = previousState[linkId] || null;
+            var wasActive = before && before.active === true;
+            var isActive = now.active === true;
+            var reason = '';
+
+            if (!wasActive && isActive) {
+
+                reason = 'initial';
+
+            } else if (wasActive && !isActive) {
+
+                reason = 'cleared';
+
+            } else if (wasActive && isActive && before &&
+                (before.status !== now.status ||
+                 before.severity !== now.severity ||
+                 before.latestUpdate !== now.latestUpdate)) {
+
+                reason = 'update';
+            }
+
+            if (!reason) {
+                continue;
+            }
+
+            var offeringId = now.offeringId;
+
+            if (!recipientCache.hasOwnProperty(offeringId)) {
+                recipientCache[offeringId] =
+                    this.getServiceOfferingRecipientIds(offeringId);
+            }
+
+            var recipients = recipientCache[offeringId];
+
+            if (!recipients.length) {
+
+                counts.skippedNoSubscribers++;
+
+                gs.info(
+                    '[Outage Shield] ' + vendorName +
+                    ' | Service status notification skipped: ' +
+                    'no eligible subscribers' +
+                    ' | Reason: ' + reason +
+                    ' | Offering: ' + offeringId
+                );
+
+                continue;
+            }
+
+            // The Event Registry is on the relationship table,
+            // so pass its actual GlideRecord to gs.eventQueue().
+            var link = new GlideRecord(relationshipTable);
+
+            if (!link.get(linkId)) {
+                throw new Error(
+                    'Notification link no longer exists: ' + linkId
+                );
+            }
+
+            // Snapshot vendor data for the email template, which
+            // may execute after a subsequent vendor poll.
+            // "cleared" means potential impact ended; it does not
+            // necessarily mean that the vendor outage is resolved.
+            var payload = {
+                reason: reason,
+                offering: offeringId,
+                vendor: vendorId,
+                outage: now.outageId,
+                status: now.status,
+                severity: now.severity,
+                latestUpdate: now.latestUpdate.substring(0, 400),
+                detectedAt: new GlideDateTime().getValue()
+            };
+
+            var payloadJson = JSON.stringify(payload);
+            var eventsForChange = 0;
+
+            for (var n = 0;
+                n < recipients.length;
+                n += recipientsPerEvent) {
+
+                var recipientIds = recipients.slice(
+                    n, n + recipientsPerEvent
+                ).join(',');
+
+                gs.eventQueue(
+                    eventName,
+                    link,
+                    recipientIds,  // parm1: sys_user IDs
+                    payloadJson    // parm2: JSON details
+                );
+
+                eventsForChange++;
+                counts.queued++;
+            }
+
+            counts[reason]++;
+
+            gs.info(
+                '[Outage Shield] ' + vendorName +
+                ' | Service status event queued: ' + reason +
+                ' | Outage: ' + now.outageId +
+                ' | Offering: ' + offeringId +
+                ' | Subscriber count: ' + recipients.length +
+                ' | Event batches: ' + eventsForChange
+            );
+        }
+
+        return counts;
+    },
+
+    // =========================================================
+    // 18. Reconcile saved outages with vendor incident history
+    // =========================================================
+
+    reconcileSavedIncidents: function(vendor, processor) {
+
+        var endpoint = vendor.getValue(
+            'incidents_api_endpoint'
+        );
+
+        if (!endpoint ||
+            endpoint.indexOf('https://') !== 0) {
+
+            throw new Error(
+                'Invalid incidents API endpoint'
+            );
+        }
+
+        var request = new sn_ws.RESTMessageV2();
+
+        request.setHttpMethod('get');
+        request.setEndpoint(endpoint);
+        request.setRequestHeader(
+            'Accept',
+            'application/json'
+        );
+        request.setHttpTimeout(15000);
+
+        var response = request.execute();
+
+        if (response.getStatusCode() != 200) {
+
+            throw new Error(
+                'Incidents API HTTP status: ' +
+                response.getStatusCode()
+            );
+        }
+
+        var result = processor.processResponse(
+            response.getBody()
+        );
+
+        var reconciled = 0;
+        var vendorId = vendor.getUniqueValue();
+
+        for (var i = 0;
+            i < result.incidents.length;
+            i++) {
+
+            var incident = result.incidents[i];
+
+            if (!incident.externalId) {
+                continue;
+            }
+
+            var outage = new GlideRecord(
+                'x_1951923_outage_0_vendor_outage'
+            );
+
+            outage.addQuery('vendor', vendorId);
+            outage.addQuery(
+                'external_incident_id',
+                incident.externalId
+            );
+            outage.setLimit(1);
+            outage.query();
+
+            // Do not import unrelated historical incidents.
+            if (!outage.next()) {
+                continue;
+            }
+
+            // Do not overwrite newer vendor information.
+
+            var savedUpdated = outage.getValue(
+                'vendor_last_updated'
+            );
+
+            if (savedUpdated) {
+
+                if (!incident.vendorLastUpdated) {
+                    continue;
+                }
+
+                var incomingTime = Date.parse(
+                    incident.vendorLastUpdated
+                );
+
+                if (isNaN(incomingTime)) {
+
+                    throw new Error(
+                        'Invalid vendor last-updated timestamp'
+                    );
+                }
+
+                var savedTime = new GlideDateTime(
+                    savedUpdated
+                ).getNumericValue();
+
+                if (incomingTime < savedTime) {
+                    continue;
+                }
+            }
+
+            var action = processor.saveIncident(
+                vendorId,
+                incident
+            );
+
+            if (action === 'updated') {
+
+                reconciled++;
+
+                gs.info(
+                    vendor.getValue('vendor_name') +
+                    ' | Reconciled: ' +
+                    incident.externalId +
+                    ' | Status: ' + incident.status
+                );
+            }
+        }
+
+        return reconciled;
+    },
+
+    type: 'VendorStatusPoller'
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2026-10-26 19:51:40</sys_created_on>
+        <sys_id>3b093263478893105a3ab4fe316d4353</sys_id>
+        <sys_mod_count>16</sys_mod_count>
+        <sys_name>VendorStatusPoller</sys_name>
+        <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+        <sys_update_name>sys_script_include_3b093263478893105a3ab4fe316d4353</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2026-11-03 12:53:59</sys_updated_on>
+    </sys_script_include>
+</record_update>

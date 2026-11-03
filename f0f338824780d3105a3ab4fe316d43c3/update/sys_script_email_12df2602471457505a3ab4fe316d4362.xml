@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_email">
+    <sys_script_email action="INSERT_OR_UPDATE">
+        <name>outage_status_content</name>
+        <new_lines_to_html>false</new_lines_to_html>
+        <script><![CDATA[
+(function runMailScript(current, template, email, email_action, event) {
+
+    // Read event details from Parm 2
+    var data = {};
+
+    try {
+        data = JSON.parse(String(event.parm2 || '{}'));
+    } catch (e) {
+        gs.error('[Outage Shield] Invalid email event JSON: ' + e);
+        return;
+    }
+
+    var reason = String(data.reason || 'update').toLowerCase();
+
+    // Get the Service Offering display name
+    var service = current.getDisplayValue('service_offering') ||
+        'Your subscribed service';
+
+    // Resolve the vendor name
+    var vendor = String(data.vendor || '');
+
+    if (/^[0-9a-f]{32}$/i.test(vendor)) {
+        var vendorRecord = new GlideRecord(
+            'x_1951923_outage_0_vendor_configuration'
+        );
+
+        if (vendorRecord.get(vendor)) {
+            vendor = vendorRecord.getValue('vendor_name') || vendor;
+        } else {
+            vendor = 'Service provider';
+        }
+    }
+
+    if (!vendor) {
+        vendor = 'Service provider';
+    }
+
+    var status = String(data.status || 'Not provided');
+    var severity = String(data.severity || 'Not provided');
+    var latestUpdate = String(data.latestUpdate || '');
+
+    // Determine the notification message
+    var heading;
+    var message;
+
+    if (reason === 'initial') {
+
+        heading = 'Potential Service Disruption';
+
+        message =
+            'Our monitoring has detected a vendor incident ' +
+            'that may affect this service. Actual user impact ' +
+            'has not yet been confirmed.';
+
+    } else if (reason === 'cleared') {
+
+        heading = 'Potential Service Impact Cleared';
+
+        message =
+            'Our monitoring no longer indicates potential ' +
+            'impact to this service. The vendor incident may ' +
+            'still be ongoing.';
+
+    } else {
+
+        heading = 'Service Status Update';
+
+        message =
+            'A meaningful change has been detected in the ' +
+            'vendor incident associated with this service. ' +
+            'We are continuing to monitor potential impact.';
+    }
+
+    // Escape values before inserting into HTML
+    function esc(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // Set dynamic subject
+    email.setSubject(heading + ' - ' + service);
+
+    // Build the email body
+    template.print(
+        '<div style="font-family:Arial,sans-serif;' +
+        'font-size:14px;line-height:1.6;color:#263238;">'
+    );
+
+    template.print(
+        '<h2 style="margin-bottom:12px;">' +
+        esc(heading) + '</h2>'
+    );
+
+    template.print(
+        '<p>' + esc(message) + '</p>'
+    );
+
+    template.print(
+        '<table style="border-collapse:collapse;' +
+        'margin:20px 0;width:100%;max-width:550px;">'
+    );
+
+    function addRow(label, value) {
+        template.print(
+            '<tr>' +
+            '<td style="padding:8px;border-bottom:1px solid #ddd;' +
+            'font-weight:bold;width:40%;">' +
+            esc(label) + '</td>' +
+            '<td style="padding:8px;border-bottom:1px solid #ddd;">' +
+            esc(value) + '</td>' +
+            '</tr>'
+        );
+    }
+
+    addRow('Service', service);
+    addRow('Vendor', vendor);
+    addRow('Update', heading);
+    addRow('Vendor status', status);
+    addRow('Vendor severity', severity);
+
+    if (latestUpdate) {
+        addRow('Latest vendor update', latestUpdate);
+    }
+
+    template.print('</table>');
+
+    template.print(
+        '<p style="font-size:12px;color:#666;">' +
+        'This is an automated service advisory from Outage Shield. ' +
+        'Potential impact is based on vendor monitoring and does ' +
+        'not necessarily indicate a confirmed local outage.' +
+        '</p>'
+    );
+
+    template.print('</div>');
+
+})(current, template, email, email_action, event);
+]]></script>
+        <sys_class_name>sys_script_email</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2026-11-03 13:35:42</sys_created_on>
+        <sys_id>12df2602471457505a3ab4fe316d4362</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>outage_status_content</sys_name>
+        <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+        <sys_policy/>
+        <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+        <sys_update_name>sys_script_email_12df2602471457505a3ab4fe316d4362</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2026-11-03 13:35:42</sys_updated_on>
+    </sys_script_email>
+</record_update>

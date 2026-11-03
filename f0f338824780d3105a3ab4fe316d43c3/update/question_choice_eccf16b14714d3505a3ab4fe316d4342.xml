@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="question_choice">
+    <question_choice action="INSERT_OR_UPDATE">
+        <inactive>false</inactive>
+        <order>100</order>
+        <published_ref/>
+        <question display_value="What would you like to do?">387f9a714714d3505a3ab4fe316d431d</question>
+        <sys_class_name>question_choice</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2026-11-02 17:47:05</sys_created_on>
+        <sys_id>eccf16b14714d3505a3ab4fe316d4342</sys_id>
+        <sys_mod_count>3</sys_mod_count>
+        <sys_name>Keep me informed about this IT service (don't submit an Incident)</sys_name>
+        <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+        <sys_policy/>
+        <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+        <sys_update_name>question_choice_eccf16b14714d3505a3ab4fe316d4342</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2026-11-02 18:56:27</sys_updated_on>
+        <text>Keep me informed about this IT service (don't submit an Incident)</text>
+        <value>subscribe</value>
+    </question_choice>
+    <fx_price action="delete_multiple" query="id=eccf16b14714d3505a3ab4fe316d4342"/>
+</record_update>

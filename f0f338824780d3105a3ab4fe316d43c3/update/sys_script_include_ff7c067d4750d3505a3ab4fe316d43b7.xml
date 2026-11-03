@@ -1,0 +1,338 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_1951923_outage_0.OutageShieldAdvisoryAjax</api_name>
+        <caller_access/>
+        <client_callable>true</client_callable>
+        <description/>
+        <mobile_callable>false</mobile_callable>
+        <name>OutageShieldAdvisoryAjax</name>
+        <sandbox_callable>false</sandbox_callable>
+        <script><![CDATA[
+var OutageShieldAdvisoryAjax = Class.create();
+
+OutageShieldAdvisoryAjax.prototype =
+    Object.extendsObject(global.AbstractAjaxProcessor, {
+
+    // --------------------------------------------------
+    // Retrieve current known-issue advisories
+    // --------------------------------------------------
+
+    getAdvisory: function() {
+
+        var result = {
+            alerts: [],
+            error: false
+        };
+
+        try {
+
+            // Resolve employee-friendly service choice.
+            var serviceKey = String(
+                this.getParameter('sysparm_service_key') || ''
+            );
+
+            var offeringId =
+                new OutageShieldServiceResolver()
+                    .getOfferingId(serviceKey);
+
+            if (!offeringId) {
+                return JSON.stringify(result);
+            }
+
+            // Find current potential impacts.
+            var links = new GlideRecord(
+                'x_1951923_outage_0_outage_service_offering'
+            );
+
+            links.addQuery('service_offering', offeringId);
+
+            links.addQuery(
+                'current_potential_impact',
+                true
+            );
+
+            links.query();
+
+            var now = new GlideDateTime().getNumericValue();
+            var maxAge = 12 * 60 * 1000;
+            var seenOutages = {};
+
+            while (links.next() && result.alerts.length < 3) {
+
+                var outageId =
+                    links.getValue('vendor_outage');
+
+                if (!outageId || seenOutages[outageId]) {
+                    continue;
+                }
+
+                seenOutages[outageId] = true;
+
+                var outage = new GlideRecord(
+                    'x_1951923_outage_0_vendor_outage'
+                );
+
+                if (!outage.get(outageId)) {
+                    continue;
+                }
+
+                var status = String(
+                    outage.getValue('status') || ''
+                ).toLowerCase();
+
+                if (status !== 'investigating' &&
+                    status !== 'identified' &&
+                    status !== 'monitoring') {
+                    continue;
+                }
+
+                var vendor = new GlideRecord(
+                    'x_1951923_outage_0_vendor_configuration'
+                );
+
+                if (!vendor.get(outage.getValue('vendor'))) {
+                    continue;
+                }
+
+                var active = String(
+                    vendor.getValue('active') || ''
+                ).toLowerCase();
+
+                if (active !== '1' && active !== 'true') {
+                    continue;
+                }
+
+                if (vendor.getValue('last_poll_result') !==
+                    'success') {
+                    continue;
+                }
+
+                var lastPoll =
+                    vendor.getValue('last_successful_poll_at');
+
+                if (!lastPoll) {
+                    continue;
+                }
+
+                var pollTime = new GlideDateTime(
+                    lastPoll
+                ).getNumericValue();
+
+                if (pollTime > now ||
+                    now - pollTime > maxAge) {
+                    continue;
+                }
+
+                // A primary Incident is optional.
+                // Only disclose its number if readable.
+                var incidentNumber = '';
+
+                var incidentId =
+                    outage.getValue('primary_incident');
+
+                if (incidentId) {
+
+                    var incident = new GlideRecordSecure(
+                        'incident'
+                    );
+
+                    if (incident.get(incidentId) &&
+                        incident.canRead()) {
+
+                        incidentNumber =
+                            incident.getValue('number') || '';
+                    }
+                }
+
+                var vendorName = String(
+                    vendor.getValue('vendor_name') || 'Vendor'
+                ).replace(/[<>]/g, '');
+
+                result.alerts.push({
+                    vendor: vendorName,
+                    status: status,
+                    incidentNumber: incidentNumber
+                });
+            }
+
+        } catch (e) {
+
+            gs.error(
+                '[Outage Shield] Advisory lookup failed: ' + e
+            );
+
+            result.alerts = [];
+            result.error = true;
+        }
+
+        return JSON.stringify(result);
+    },
+
+
+    // --------------------------------------------------
+    // Subscribe authenticated user to Service Offering
+    // --------------------------------------------------
+
+    subscribeCurrentUser: function() {
+
+        var result = {
+            success: false,
+            status: 'error',
+            message: ''
+        };
+
+        try {
+
+            // 1. Identify and validate authenticated user.
+            var userId = gs.getUserID();
+            var userName = gs.getUserName();
+
+            if (!/^[0-9a-f]{32}$/i.test(userId) ||
+                userName === 'guest') {
+
+                result.message =
+                    'Invalid subscription request.';
+
+                return JSON.stringify(result);
+            }
+
+            // 2. Resolve approved employee-facing choice.
+            var serviceKey = String(
+                this.getParameter('sysparm_service_key') || ''
+            );
+
+            var offeringId =
+                new OutageShieldServiceResolver()
+                    .getOfferingId(serviceKey);
+
+            if (!offeringId) {
+
+                result.status = 'invalid_service';
+                result.message =
+                    'The selected IT service is unavailable.';
+
+                return JSON.stringify(result);
+            }
+
+            // 3. Require a current known-issue advisory.
+            var advisory = JSON.parse(this.getAdvisory());
+
+            if (advisory.error ||
+                !advisory.alerts ||
+                advisory.alerts.length === 0) {
+
+                result.status = 'no_active_outage';
+                result.message =
+                    'No current advisory is available ' +
+                    'for the selected service.';
+
+                return JSON.stringify(result);
+            }
+
+            // 4. Check existing subscription.
+            //
+            // This is a controlled server-side operation.
+            // The user's identity comes from the session.
+            // The offering comes from our approved resolver.
+
+            var subscription = new GlideRecord(
+                'service_subscribe_sys_user'
+            );
+
+            subscription.addQuery('sys_user', userId);
+
+            subscription.addQuery(
+                'service_offering',
+                offeringId
+            );
+
+            subscription.setLimit(1);
+            subscription.query();
+
+            if (subscription.next()) {
+
+                result.success = true;
+                result.status = 'already_subscribed';
+                result.message =
+                    'You are already subscribed to this service.';
+
+                return JSON.stringify(result);
+            }
+
+            // 5. Create individual subscription.
+            //
+            // Use server-side GlideRecord rather than
+            // GlideRecordSecure, because ordinary employees
+            // are not granted direct table-create permission.
+            //
+            // Cross-scope application permissions still apply.
+
+            var newSubscription = new GlideRecord(
+                'service_subscribe_sys_user'
+            );
+
+            newSubscription.initialize();
+
+            newSubscription.setValue(
+                'sys_user',
+                userId
+            );
+
+            newSubscription.setValue(
+                'service_offering',
+                offeringId
+            );
+
+            var newId = newSubscription.insert();
+
+            if (!newId) {
+                throw new Error(
+                    'Subscription insert failed'
+                );
+            }
+
+            result.success = true;
+            result.status = 'subscribed';
+            result.message =
+                'You are now subscribed to this service.';
+
+            gs.info(
+                '[Outage Shield] Service subscription created.' +
+                ' User: ' + userId +
+                ' Offering: ' + offeringId
+            );
+
+        } catch (e) {
+
+            gs.error(
+                '[Outage Shield] Subscription failed: ' + e
+            );
+
+            result.status = 'error';
+            result.message =
+                'Unable to complete the subscription. ' +
+                'Please try again or contact IT support.';
+        }
+
+        return JSON.stringify(result);
+    },
+
+    type: 'OutageShieldAdvisoryAjax'
+});
+]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2026-11-02 16:32:40</sys_created_on>
+        <sys_id>ff7c067d4750d3505a3ab4fe316d43b7</sys_id>
+        <sys_mod_count>3</sys_mod_count>
+        <sys_name>OutageShieldAdvisoryAjax</sys_name>
+        <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+        <sys_update_name>sys_script_include_ff7c067d4750d3505a3ab4fe316d43b7</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2026-11-02 19:33:29</sys_updated_on>
+    </sys_script_include>
+</record_update>

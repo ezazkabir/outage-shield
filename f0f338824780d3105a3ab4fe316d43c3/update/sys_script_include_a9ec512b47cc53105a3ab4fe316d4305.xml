@@ -1,0 +1,2185 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_1951923_outage_0.VendorOutageProcessor</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>Reusable server-side logic for validating and processing SaaS vendor status API responses, identifying outages, mapping affected services, and creating or updating Vendor Outage records.</description>
+        <mobile_callable>false</mobile_callable>
+        <name>VendorOutageProcessor</name>
+        <sandbox_callable>false</sandbox_callable>
+        <script><![CDATA[var VendorOutageProcessor = Class.create();
+
+VendorOutageProcessor.prototype = {
+
+    initialize: function() {
+    },
+
+    // =========================================================
+    // 1. Parse vendor API response
+    // =========================================================
+
+    processResponse: function(responseBody) {
+
+        if (!responseBody) {
+            throw new Error('Empty API response');
+        }
+
+        var data;
+
+        try {
+            data = JSON.parse(responseBody);
+        } catch (e) {
+            throw new Error('Invalid JSON response');
+        }
+
+        if (!data || !Array.isArray(data.incidents)) {
+            throw new Error('Missing incidents array');
+        }
+
+        // Current global component statuses, when supplied.
+        var globalStatuses = {};
+        var globalComponents = Array.isArray(data.components)
+            ? data.components : [];
+
+        for (var g = 0; g < globalComponents.length; g++) {
+
+            var globalComponent = globalComponents[g];
+
+            if (globalComponent && globalComponent.id) {
+                globalStatuses['id:' + globalComponent.id] =
+                    globalComponent.status || '';
+            }
+        }
+
+        var incidents = [];
+
+        for (var i = 0; i < data.incidents.length; i++) {
+
+            var incident = data.incidents[i];
+            var componentIds = [];
+            var componentDetails = [];
+
+            var components = Array.isArray(incident.components)
+                ? incident.components : [];
+
+            for (var j = 0; j < components.length; j++) {
+
+                var component = components[j];
+
+                if (component && component.id) {
+
+                    componentIds.push(component.id);
+
+                    // NEW: Preserve the live status evidence.
+                    componentDetails.push({
+                        id: component.id,
+                        name: component.name || '',
+                        incidentStatus: component.status || '',
+                        globalStatus:
+                            globalStatuses['id:' + component.id] || ''
+                    });
+                }
+            }
+
+            var updates = Array.isArray(incident.incident_updates)
+                ? incident.incident_updates : [];
+
+            var latestUpdate = '';
+            var latestTime = -1;
+
+            for (var k = 0; k < updates.length; k++) {
+
+                var update = updates[k];
+
+                if (!update || !update.body) {
+                    continue;
+                }
+
+                var updateTime = Date.parse(
+                    update.updated_at || update.created_at || ''
+                );
+
+                if (!isNaN(updateTime) &&
+                    updateTime > latestTime) {
+
+                    latestTime = updateTime;
+                    latestUpdate = update.body;
+
+                } else if (!latestUpdate) {
+
+                    latestUpdate = update.body;
+                }
+            }
+
+            incidents.push({
+                externalId: incident.id,
+                title: incident.name,
+                status: incident.status,
+                severity: incident.impact,
+                componentIds: componentIds,
+
+                // NEW: Used for live operational assessments.
+                // Not saved in the cumulative historical field.
+                componentDetails: componentDetails,
+
+                reportedAt: incident.created_at || '',
+                vendorLastUpdated: incident.updated_at || '',
+                vendorResolvedAt: incident.resolved_at || '',
+                latestUpdate: latestUpdate
+            });
+        }
+
+        return {
+            incidentCount: incidents.length,
+            componentCount: globalComponents.length,
+            incidents: incidents
+        };
+    },
+
+    // =========================================================
+    // 2. Insert or update Vendor Outage
+    // =========================================================
+
+    saveIncident: function(vendorSysId, incident) {
+
+        if (!vendorSysId || !incident ||
+            !incident.externalId || !incident.title ||
+            !incident.status) {
+
+            throw new Error('Missing required incident information');
+        }
+
+        function toServiceNowDateTime(isoValue) {
+
+            var milliseconds = Date.parse(isoValue);
+
+            if (isNaN(milliseconds)) {
+                throw new Error(
+                    'Invalid vendor timestamp: ' + isoValue
+                );
+            }
+
+            var gdt = new GlideDateTime();
+            gdt.setNumericValue(milliseconds);
+
+            return gdt.getValue();
+        }
+
+        var gr = new GlideRecord(
+            'x_1951923_outage_0_vendor_outage'
+        );
+
+        gr.addQuery('vendor', vendorSysId);
+        gr.addQuery('external_incident_id', incident.externalId);
+        gr.setLimit(1);
+        gr.query();
+
+        var existing = gr.next();
+
+        // Compare the prior persisted status with the incoming one.
+        // Initial inserts do not generate Incident work notes.
+        var previousStatus = existing
+            ? String(gr.getValue('status') || '').toLowerCase().trim()
+            : '';
+
+        // Do not allow an older Summary API snapshot to roll back
+        // a newer status already saved from vendor history.
+        // This also prevents misleading reverse-transition notes.
+        if (existing && incident.vendorLastUpdated) {
+
+            var storedUpdated = gr.getValue('vendor_last_updated');
+
+            if (storedUpdated) {
+
+                var incomingTime = Date.parse(
+                    incident.vendorLastUpdated
+                );
+
+                if (isNaN(incomingTime)) {
+                    throw new Error(
+                        'Invalid vendor timestamp: ' +
+                        incident.vendorLastUpdated
+                    );
+                }
+
+                var storedTime = new GlideDateTime(
+                    storedUpdated
+                ).getNumericValue();
+
+                if (incomingTime < storedTime) {
+
+                    gs.info(
+                        '[Outage Shield] Ignored older vendor update: ' +
+                        incident.externalId
+                    );
+
+                    return 'unchanged';
+                }
+            }
+        }
+
+        var componentIds = Array.isArray(incident.componentIds)
+            ? incident.componentIds : [];
+
+        var allComponentIds = componentIds.slice();
+
+        if (existing) {
+
+            var previousJson =
+                gr.getValue('affected_component_ids') || '[]';
+
+            var previousIds;
+
+            try {
+                previousIds = JSON.parse(previousJson);
+            } catch (e) {
+                throw new Error('Invalid stored component IDs');
+            }
+
+            if (!Array.isArray(previousIds)) {
+                throw new Error(
+                    'Stored component IDs must be an array'
+                );
+            }
+
+            allComponentIds = previousIds.concat(componentIds);
+        }
+
+        var seen = {};
+        var uniqueIds = [];
+
+        for (var i = 0; i < allComponentIds.length; i++) {
+
+            var id = allComponentIds[i];
+
+            if (typeof id === 'string' &&
+                id.length > 0 &&
+                !seen[id]) {
+
+                seen[id] = true;
+                uniqueIds.push(id);
+            }
+        }
+
+        uniqueIds.sort();
+
+        var componentJson = JSON.stringify(uniqueIds);
+
+        if (componentJson.length > 4000) {
+            throw new Error(
+                'Affected component IDs exceed field capacity'
+            );
+        }
+
+        if (!existing) {
+            gr.initialize();
+            gr.setValue('vendor', vendorSysId);
+            gr.setValue(
+                'external_incident_id',
+                incident.externalId
+            );
+        }
+
+        var changed = !existing;
+
+        function setIfChanged(fieldName, value) {
+
+            if ((gr.getValue(fieldName) || '') !== value) {
+                gr.setValue(fieldName, value);
+                changed = true;
+            }
+        }
+
+        setIfChanged('title', incident.title);
+        setIfChanged('status', incident.status);
+        setIfChanged('severity', incident.severity || '');
+
+        setIfChanged(
+            'affected_component_ids',
+            componentJson
+        );
+
+        if (incident.reportedAt) {
+            setIfChanged(
+                'reported_at',
+                toServiceNowDateTime(incident.reportedAt)
+            );
+        }
+
+        if (incident.vendorLastUpdated) {
+            setIfChanged(
+                'vendor_last_updated',
+                toServiceNowDateTime(
+                    incident.vendorLastUpdated
+                )
+            );
+        }
+
+        if (incident.vendorResolvedAt) {
+            setIfChanged(
+                'vendor_resolved_at',
+                toServiceNowDateTime(
+                    incident.vendorResolvedAt
+                )
+            );
+        }
+
+        if (incident.latestUpdate) {
+
+            if (incident.latestUpdate.length > 4000) {
+                throw new Error(
+                    'Latest vendor update exceeds field capacity'
+                );
+            }
+
+            setIfChanged(
+                'latest_update',
+                incident.latestUpdate
+            );
+        }
+
+        if (!existing) {
+
+            if (!gr.insert()) {
+                throw new Error(
+                    'Failed to insert Vendor Outage'
+                );
+            }
+
+            return 'inserted';
+        }
+
+        if (changed) {
+
+            if (!gr.update()) {
+                throw new Error(
+                    'Failed to update Vendor Outage'
+                );
+            }
+
+            // A successful update of an EXISTING Vendor Outage
+            // may also need a note on its linked native Incident.
+            // Do not add notes for unrelated field changes.
+            var currentStatus = String(
+                gr.getValue('status') || ''
+            ).toLowerCase().trim();
+
+            if (previousStatus !== currentStatus &&
+                gr.getValue('primary_incident')) {
+
+                try {
+                    this.addVendorStatusWorkNote(
+                        gr,
+                        previousStatus,
+                        currentStatus,
+                        incident.latestUpdate || ''
+                    );
+                } catch (noteError) {
+
+                    // Vendor Outage has already been updated.
+                    // Log the Incident note failure; do not claim
+                    // that the vendor save itself failed.
+                    gs.error(
+                        '[Outage Shield] Incident status note failed ' +
+                        'for vendor outage ' + incident.externalId +
+                        ': ' + String(noteError.message || noteError)
+                    );
+                }
+            }
+
+            return 'updated';
+        }
+
+        return 'unchanged';
+    },
+
+    // =========================================================
+    // 2A. Add work note for an actual vendor status transition
+    // =========================================================
+    // Called by saveIncident only after successful update of
+    // an existing Vendor Outage with a changed status and link.
+    // No Incident state/priority/major-state changes occur here.
+    // =========================================================
+
+    addVendorStatusWorkNote: function(
+        outage, previousStatus, currentStatus, latestUpdate
+    ) {
+
+        // This is a native ITSM write. Respect the same
+        // automation switch used by VendorStatusPoller.
+        var enabled = String(gs.getProperty(
+            'x_1951923_outage_0.enable_itsm_automation',
+            'false'
+        )).toLowerCase() === 'true';
+
+        if (!enabled) {
+            return false;
+        }
+
+        var outageId = outage.getUniqueValue();
+        var incidentId = outage.getValue('primary_incident');
+
+        if (!incidentId || previousStatus === currentStatus) {
+            return false;
+        }
+
+        var linkedIncident = new GlideRecord('incident');
+
+        if (!linkedIncident.get(incidentId)) {
+            throw new Error('Linked Incident could not be found');
+        }
+
+        // Never update an unrelated Incident by mistake.
+        var correlationId = linkedIncident.getValue(
+            'correlation_id'
+        );
+
+        if (correlationId !== 'OS:' + outageId &&
+            correlationId !== 'OS-TEST:' + outageId) {
+
+            throw new Error(
+                'Linked Incident has an unexpected correlation ID'
+            );
+        }
+
+        var labels = {
+            investigating: 'Investigating',
+            identified: 'Identified',
+            monitoring: 'Monitoring',
+            resolved: 'Resolved',
+            postmortem: 'Postmortem'
+        };
+
+        var fromLabel = labels[previousStatus] || previousStatus;
+        var toLabel = labels[currentStatus] || currentStatus;
+
+        var note =
+            'OUTAGE SHIELD - VENDOR STATUS CHANGE\n' +
+            'Vendor: ' + outage.getDisplayValue('vendor') + '\n' +
+            'Vendor incident: ' +
+                outage.getValue('external_incident_id') + '\n' +
+            'Status: ' + (fromLabel || 'Unknown') +
+                ' -> ' + (toLabel || 'Unknown') + '\n';
+
+        if (currentStatus === 'resolved' ||
+            currentStatus === 'postmortem') {
+
+            note +=
+                'The vendor reports that its outage has ended. ' +
+                'Internal service recovery is NOT yet confirmed. ' +
+                'Verify affected services before resolving ' +
+                'the ServiceNow Incident.\n';
+
+        } else if (previousStatus === 'resolved' ||
+            previousStatus === 'postmortem') {
+
+            note +=
+                'The vendor has reopened or resumed activity ' +
+                'on this outage. Reassess potential internal ' +
+                'business impact.\n';
+
+        } else if (currentStatus === 'monitoring') {
+
+            note +=
+                'The vendor is monitoring recovery. Internal ' +
+                'service recovery remains unverified.\n';
+        }
+
+        if (latestUpdate) {
+            note += 'Latest vendor update: ' +
+                String(latestUpdate)
+                    .replace(/\s+/g, ' ')
+                    .substring(0, 500) + '\n';
+        }
+
+      linkedIncident.work_notes = note;
+
+        if (!linkedIncident.update()) {
+            throw new Error(
+                'Failed to save work note on linked Incident'
+            );
+        }
+
+        gs.info(
+            '[Outage Shield] Incident ' +
+            linkedIncident.getValue('number') +
+            ' | Vendor status: ' + previousStatus +
+            ' -> ' + currentStatus +
+            ' | Work note added'
+        );
+
+        return true;
+    },
+
+    // =========================================================
+    // 3. Find historically mapped Service Offerings
+    // =========================================================
+    //
+    // Preserved for historical lookups and existing tests.
+    // This uses cumulative stored component IDs.
+    // It must NOT drive live Incident creation.
+    // =========================================================
+
+    findMappedOfferings: function(outageSysId) {
+
+        if (!outageSysId) {
+            throw new Error('Missing Vendor Outage sys_id');
+        }
+
+        var outage = new GlideRecord(
+            'x_1951923_outage_0_vendor_outage'
+        );
+
+        if (!outage.get(outageSysId)) {
+            throw new Error('Vendor Outage not found');
+        }
+
+        var componentIds;
+
+        try {
+            componentIds = JSON.parse(
+                outage.getValue('affected_component_ids') || '[]'
+            );
+        } catch (e) {
+            throw new Error('Invalid stored component IDs');
+        }
+
+        if (!Array.isArray(componentIds)) {
+            throw new Error('Component IDs must be an array');
+        }
+
+        var offerings = [];
+        var seen = {};
+
+        for (var i = 0; i < componentIds.length; i++) {
+
+            var mapping = new GlideRecord(
+                'x_1951923_outage_0_component_mapping'
+            );
+
+            mapping.addQuery(
+                'vendor',
+                outage.getValue('vendor')
+            );
+
+            mapping.addQuery(
+                'vendor_component_id',
+                componentIds[i]
+            );
+
+            mapping.addQuery('active', true);
+            mapping.query();
+
+            while (mapping.next()) {
+
+                var offeringId =
+                    mapping.getValue('service_offering');
+
+                if (offeringId && !seen[offeringId]) {
+
+                    seen[offeringId] = true;
+
+                    offerings.push({
+                        sysId: offeringId,
+                        name: mapping.getDisplayValue(
+                            'service_offering'
+                        )
+                    });
+                }
+            }
+        }
+
+        return offerings;
+    },
+
+    // =========================================================
+    // 4. Assess historical potential impact
+    // =========================================================
+    //
+    // Preserved for existing lookups and tests.
+    // Uses cumulative historical component involvement.
+    // =========================================================
+
+    assessImpact: function(outageSysId) {
+
+        if (!outageSysId) {
+            throw new Error('Missing Vendor Outage sys_id');
+        }
+
+        var outage = new GlideRecord(
+            'x_1951923_outage_0_vendor_outage'
+        );
+
+        if (!outage.get(outageSysId)) {
+            throw new Error('Vendor Outage not found');
+        }
+
+        var status = (
+            outage.getValue('status') || ''
+        ).toLowerCase();
+
+        if (!status) {
+            throw new Error('Vendor Outage has no status');
+        }
+
+        var componentIds;
+
+        try {
+            componentIds = JSON.parse(
+                outage.getValue('affected_component_ids') || '[]'
+            );
+        } catch (e) {
+            throw new Error('Invalid stored component IDs');
+        }
+
+        if (!Array.isArray(componentIds)) {
+            throw new Error('Component IDs must be an array');
+        }
+
+        var offerings = this.findMappedOfferings(outageSysId);
+
+        var classification = '';
+        var reason = '';
+
+        if (status === 'resolved' ||
+            status === 'postmortem') {
+
+            classification = 'resolved';
+            reason = 'Vendor incident is no longer active';
+
+        } else if (componentIds.length === 0) {
+
+            classification = 'unknown_impact';
+            reason = 'Vendor supplied no affected component IDs';
+
+        } else if (offerings.length === 0) {
+
+            classification = 'unmapped';
+            reason = 'No active Service Offering mappings found';
+
+        } else {
+
+            classification = 'potential_impact';
+            reason =
+                'Unresolved vendor incident with mapped dependencies';
+        }
+
+        return {
+            outageSysId: outageSysId,
+            externalIncidentId:
+                outage.getValue('external_incident_id'),
+            vendorStatus: status,
+            vendorSeverity: outage.getValue('severity') || '',
+            classification: classification,
+            componentCount: componentIds.length,
+            offerings: offerings,
+            reason: reason,
+
+            // Explicitly mark this as historical.
+            source: 'historical_record'
+        };
+    },
+
+    // =========================================================
+    // 5. Assess four-level preliminary business risk
+    // =========================================================
+
+    assessBusinessRisk: function(assessment) {
+
+        if (!assessment ||
+            assessment.classification !== 'potential_impact' ||
+            !Array.isArray(assessment.offerings) ||
+            assessment.offerings.length === 0) {
+
+            throw new Error(
+                'Business risk requires a potential_impact assessment'
+            );
+        }
+
+        var severity = String(
+            assessment.vendorSeverity || ''
+        ).toLowerCase().trim();
+
+        var matrix = {
+
+            '1': {
+                minor: 'medium',
+                major: 'high',
+                critical: 'very_high'
+            },
+
+            '2': {
+                minor: 'low',
+                major: 'medium',
+                critical: 'high'
+            },
+
+            '3': {
+                minor: 'low',
+                major: 'low',
+                critical: 'medium'
+            },
+
+            '4': {
+                minor: 'low',
+                major: 'low',
+                critical: 'low'
+            }
+        };
+
+        var riskScore = {
+            low: 1,
+            medium: 2,
+            high: 3,
+            very_high: 4
+        };
+
+        var offeringResults = [];
+        var highestScore = 0;
+        var needsReview = false;
+
+        for (var i = 0; i < assessment.offerings.length; i++) {
+
+            var mappedOffering = assessment.offerings[i];
+
+            var offering = new GlideRecord('service_offering');
+
+            var criticalityValue = '';
+            var criticalityLevel = '';
+            var risk = 'needs_review';
+            var reason = '';
+
+            if (!offering.get(mappedOffering.sysId)) {
+
+                reason = 'Service Offering record not found';
+
+            } else if (!offering.isValidField(
+                'busines_criticality'
+            )) {
+
+                reason =
+                    'Service criticality field not available';
+
+            } else {
+
+                criticalityValue =
+                    offering.getValue('busines_criticality') || '';
+
+                var match = /^([1-4])(?:\s|$)/.exec(
+                    criticalityValue.trim()
+                );
+
+                if (!match) {
+
+                    reason =
+                        'Missing or unrecognised criticality';
+
+                } else {
+
+                    criticalityLevel = match[1];
+
+                    if (!matrix[criticalityLevel][severity]) {
+
+                        reason =
+                            'Missing or unrecognised vendor severity';
+
+                    } else {
+
+                        risk = matrix[criticalityLevel][severity];
+
+                        reason =
+                            'Calculated from service criticality ' +
+                            criticalityLevel +
+                            ' and vendor severity ' + severity;
+                    }
+                }
+            }
+
+            if (risk === 'needs_review') {
+
+                needsReview = true;
+
+            } else if (riskScore[risk] > highestScore) {
+
+                highestScore = riskScore[risk];
+            }
+
+            offeringResults.push({
+                sysId: mappedOffering.sysId,
+                name: mappedOffering.name,
+                criticalityValue: criticalityValue,
+                criticalityLevel: criticalityLevel,
+                risk: risk,
+                reason: reason
+            });
+        }
+
+        var highestKnownRisk = null;
+
+        if (highestScore === 4) {
+            highestKnownRisk = 'very_high';
+        } else if (highestScore === 3) {
+            highestKnownRisk = 'high';
+        } else if (highestScore === 2) {
+            highestKnownRisk = 'medium';
+        } else if (highestScore === 1) {
+            highestKnownRisk = 'low';
+        }
+
+        return {
+            outageSysId: assessment.outageSysId,
+            vendorSeverity: severity,
+            overallRisk: needsReview
+                ? 'needs_review'
+                : highestKnownRisk,
+            highestKnownRisk: highestKnownRisk,
+            needsReview: needsReview,
+            offerings: offeringResults
+        };
+    },
+
+    // =========================================================
+    // 6. Determine operational action (READ-ONLY)
+    // =========================================================
+
+    determineOperationalAction: function(
+        impactAssessment,
+        riskAssessment
+    ) {
+
+        if (!impactAssessment ||
+            !impactAssessment.classification) {
+
+            throw new Error(
+                'A valid impact assessment is required'
+            );
+        }
+
+        var status = String(
+            impactAssessment.vendorStatus || ''
+        ).toLowerCase().trim();
+
+        var classification =
+            impactAssessment.classification;
+
+        var decision = {
+            outageSysId:
+                impactAssessment.outageSysId || '',
+            externalIncidentId:
+                impactAssessment.externalIncidentId || '',
+            vendorStatus: status,
+            classification: classification,
+            overallRisk: null,
+            effectiveRisk: null,
+            action: 'manual_review',
+            suggestedPriority: null,
+            proposeMajorIncident: false,
+            requiresManualReview:
+                impactAssessment.requiresManualReview === true,
+            requiresCurrentComponentVerification:
+                impactAssessment.source !== 'live_summary',
+            reason: ''
+        };
+
+        // A. Resolved vendor incident
+
+        if (classification === 'resolved' ||
+            status === 'resolved' ||
+            status === 'postmortem') {
+
+            decision.action = 'verify_recovery';
+
+            decision.reason =
+                'Vendor reports recovery. Update any linked ' +
+                'Incident and verify internal service recovery ' +
+                'before resolving it.';
+
+            return decision;
+        }
+
+        // B. Vendor monitoring recovery
+
+        if (status === 'monitoring') {
+
+            decision.action = 'monitor_recovery';
+
+            decision.reason =
+                'Vendor is monitoring recovery. Maintain any ' +
+                'existing linked Incident. Do not create a new ' +
+                'Incident solely from historical involvement.';
+
+            return decision;
+        }
+
+        // C. Only investigating/identified qualify
+        // for automatic risk-based recommendations.
+
+        if (status !== 'investigating' &&
+            status !== 'identified') {
+
+            decision.requiresManualReview = true;
+
+            decision.reason =
+                'Vendor status is not eligible for automatic ' +
+                'Incident creation: ' + (status || 'missing');
+
+            return decision;
+        }
+
+        // D. No currently degraded component identified
+
+        if (classification === 'no_current_impact') {
+
+            decision.action = 'monitor';
+
+            decision.reason =
+                'No incident-associated vendor components ' +
+                'currently report degradation. Continue ' +
+                'monitoring; do not create a new Incident.';
+
+            return decision;
+        }
+
+        // E. Missing or unmapped evidence
+
+        if (classification === 'unknown_impact') {
+
+            decision.requiresManualReview = true;
+
+            decision.reason =
+                'Current component impact is unknown. ' +
+                'Manual review is required.';
+
+            return decision;
+        }
+
+        if (classification === 'unmapped') {
+
+            decision.action = 'review_mapping';
+            decision.requiresManualReview = true;
+
+            decision.reason =
+                'Currently degraded vendor components have ' +
+                'no active internal Service Offering mapping.';
+
+            return decision;
+        }
+
+        if (classification !== 'potential_impact') {
+
+            decision.requiresManualReview = true;
+
+            decision.reason =
+                'Unrecognised or non-actionable impact ' +
+                'classification: ' + classification;
+
+            return decision;
+        }
+
+        // F. Validate business risk
+
+        if (!riskAssessment) {
+
+            decision.requiresManualReview = true;
+            decision.reason =
+                'Business-risk assessment is missing.';
+
+            return decision;
+        }
+
+        if (riskAssessment.outageSysId &&
+            impactAssessment.outageSysId &&
+            riskAssessment.outageSysId !==
+                impactAssessment.outageSysId) {
+
+            throw new Error(
+                'Impact and risk assessments refer ' +
+                'to different Vendor Outages'
+            );
+        }
+
+        decision.overallRisk =
+            riskAssessment.overallRisk || null;
+
+        decision.requiresManualReview =
+            decision.requiresManualReview ||
+            riskAssessment.needsReview === true ||
+            riskAssessment.overallRisk === 'needs_review';
+
+        var effectiveRisk =
+            riskAssessment.overallRisk;
+
+        // Do not conceal serious known risk just because
+        // another offering has missing information.
+        if (effectiveRisk === 'needs_review') {
+            effectiveRisk =
+                riskAssessment.highestKnownRisk;
+        }
+
+        var validRisks = {
+            low: true,
+            medium: true,
+            high: true,
+            very_high: true
+        };
+
+        if (!effectiveRisk || !validRisks[effectiveRisk]) {
+
+            decision.requiresManualReview = true;
+
+            decision.reason =
+                'No valid business-risk rating is available.';
+
+            return decision;
+        }
+
+        decision.effectiveRisk = effectiveRisk;
+
+        // G. Apply our agreed operational policy
+
+        if (effectiveRisk === 'low') {
+
+            decision.action = 'monitor';
+
+            decision.reason =
+                'Low preliminary business risk. Continue ' +
+                'monitoring and provide a known-issue advisory.';
+
+        } else if (effectiveRisk === 'medium') {
+
+            decision.action = 'create_incident';
+            decision.suggestedPriority = 'P3';
+
+            decision.reason =
+                'Medium preliminary business risk. Create ' +
+                'or reuse an investigative Incident, targeting ' +
+                'P3 through the configured Impact/Urgency rules.';
+
+        } else if (effectiveRisk === 'high') {
+
+            decision.action = 'create_incident';
+            decision.suggestedPriority = 'P2';
+
+            decision.reason =
+                'High preliminary business risk. Create or ' +
+                'reuse an investigative Incident, targeting ' +
+                'P2 through the configured Impact/Urgency rules.';
+
+        } else if (effectiveRisk === 'very_high') {
+
+            decision.action =
+                'create_incident_and_propose_major';
+
+            decision.suggestedPriority = 'P2';
+            decision.proposeMajorIncident = true;
+
+            decision.reason =
+                'Very High preliminary business risk. Create ' +
+                'or reuse an investigative Incident and propose ' +
+                'it as a Major Incident candidate. Major Incident ' +
+                'acceptance requires authorised assessment.';
+        }
+
+        if (decision.requiresManualReview) {
+
+            decision.reason +=
+                ' Additional information requires manual review.';
+        }
+
+        return decision;
+    },
+
+    // =========================================================
+    // 7. Assess CURRENT vendor component impact (READ-ONLY)
+    // =========================================================
+    //
+    // Uses the incident data from the latest Summary API.
+    // Does NOT read historical affected_component_ids.
+    //
+    // Only components explicitly associated with the
+    // incident and currently reporting degradation are
+    // considered for automatic risk-based decisions.
+    //
+    // Disagreements, missing statuses or unknown statuses
+    // are excluded from automatic risk calculation and
+    // flagged for manual review.
+    // =========================================================
+
+    assessLiveImpact: function(outageSysId, liveIncident) {
+
+        if (!outageSysId || !liveIncident) {
+            throw new Error(
+                'Vendor Outage ID and live incident are required'
+            );
+        }
+
+        var outage = new GlideRecord(
+            'x_1951923_outage_0_vendor_outage'
+        );
+
+        if (!outage.get(outageSysId)) {
+            throw new Error('Vendor Outage not found');
+        }
+
+        if (String(liveIncident.externalId || '') !==
+            String(outage.getValue('external_incident_id'))) {
+
+            throw new Error(
+                'Live incident does not match Vendor Outage'
+            );
+        }
+
+        var vendorId = outage.getValue('vendor');
+
+        var status = String(
+            liveIncident.status || ''
+        ).toLowerCase().trim();
+
+        var savedStatus = String(
+            outage.getValue('status') || ''
+        ).toLowerCase().trim();
+
+        var assessment = {
+            outageSysId: outageSysId,
+            externalIncidentId: liveIncident.externalId,
+            vendorStatus: status,
+            vendorSeverity: liveIncident.severity || '',
+            classification: '',
+            componentCount: 0,
+            currentAffectedComponentIds: [],
+            uncertainComponentIds: [],
+            offerings: [],
+            requiresManualReview: false,
+            reason: '',
+            source: 'live_summary'
+        };
+
+        // The history reconciliation may contain a newer
+        // vendor update than the Summary API snapshot.
+        // Do not use older Summary data to trigger actions.
+
+        var savedUpdated =
+            outage.getValue('vendor_last_updated');
+
+        if (savedUpdated && liveIncident.vendorLastUpdated) {
+
+            var liveTime = Date.parse(
+                liveIncident.vendorLastUpdated
+            );
+
+            if (isNaN(liveTime)) {
+                throw new Error(
+                    'Invalid live vendor update timestamp'
+                );
+            }
+
+            var savedTime = new GlideDateTime(
+                savedUpdated
+            ).getNumericValue();
+
+            if (liveTime < savedTime) {
+
+                assessment.classification = 'stale_snapshot';
+                assessment.requiresManualReview = true;
+
+                assessment.reason =
+                    'Saved vendor information is newer than ' +
+                    'the current Summary API incident snapshot.';
+
+                return assessment;
+            }
+        }
+
+        // Respect the resolved state from either source.
+
+        if (status === 'resolved' ||
+            status === 'postmortem' ||
+            savedStatus === 'resolved' ||
+            savedStatus === 'postmortem') {
+
+            assessment.vendorStatus =
+                savedStatus === 'resolved' ||
+                savedStatus === 'postmortem'
+                    ? savedStatus : status;
+
+            assessment.classification = 'resolved';
+            assessment.reason =
+                'Vendor reports that the incident has ended.';
+
+            return assessment;
+        }
+
+        if (!Array.isArray(liveIncident.componentDetails) ||
+            liveIncident.componentDetails.length === 0) {
+
+            assessment.classification = 'unknown_impact';
+            assessment.requiresManualReview = true;
+
+            assessment.reason =
+                'Live vendor incident has no component-level ' +
+                'status evidence.';
+
+            return assessment;
+        }
+
+        assessment.componentCount =
+            liveIncident.componentDetails.length;
+
+        var degradedIds = [];
+        var uncertainIds = [];
+
+        var degradedSeen = {};
+        var uncertainSeen = {};
+
+        for (var i = 0;
+            i < liveIncident.componentDetails.length;
+            i++) {
+
+            var component =
+                liveIncident.componentDetails[i];
+
+            if (!component || !component.id) {
+                continue;
+            }
+
+            var incidentStatus = String(
+                component.incidentStatus || ''
+            ).toLowerCase().trim();
+
+            var globalStatus = String(
+                component.globalStatus || ''
+            ).toLowerCase().trim();
+
+            var currentStatus = '';
+
+            // If two current representations disagree,
+            // avoid guessing which one is correct.
+            if (incidentStatus && globalStatus &&
+                incidentStatus !== globalStatus) {
+
+                currentStatus = 'uncertain';
+
+            } else {
+
+                currentStatus =
+                    globalStatus || incidentStatus;
+            }
+
+            var isDegraded =
+                currentStatus === 'degraded_performance' ||
+                currentStatus === 'partial_outage' ||
+                currentStatus === 'major_outage';
+
+            if (isDegraded) {
+
+                if (!degradedSeen['id:' + component.id]) {
+
+                    degradedSeen['id:' + component.id] = true;
+                    degradedIds.push(component.id);
+                }
+
+            } else if (currentStatus !== 'operational') {
+
+                // Missing, conflicting, maintenance or
+                // unrecognised statuses require review.
+                if (!uncertainSeen['id:' + component.id]) {
+
+                    uncertainSeen['id:' + component.id] = true;
+                    uncertainIds.push(component.id);
+                }
+            }
+        }
+
+        assessment.currentAffectedComponentIds =
+            degradedIds;
+
+        assessment.uncertainComponentIds =
+            uncertainIds;
+
+        assessment.requiresManualReview =
+            uncertainIds.length > 0;
+
+        // No currently degraded components identified.
+        if (degradedIds.length === 0) {
+
+            if (uncertainIds.length > 0) {
+
+                assessment.classification = 'unknown_impact';
+                assessment.reason =
+                    'Current component status is incomplete ' +
+                    'or contradictory.';
+
+            } else {
+
+                assessment.classification =
+                    'no_current_impact';
+
+                assessment.reason =
+                    'All listed incident components currently ' +
+                    'report operational status.';
+            }
+
+            return assessment;
+        }
+
+        // Map ONLY the currently degraded components.
+        // One component may map to several offerings.
+        // Multiple components may map to one offering.
+
+        var offerings = [];
+        var offeringSeen = {};
+
+        for (var j = 0; j < degradedIds.length; j++) {
+
+            var mapping = new GlideRecord(
+                'x_1951923_outage_0_component_mapping'
+            );
+
+            mapping.addQuery('vendor', vendorId);
+            mapping.addQuery(
+                'vendor_component_id',
+                degradedIds[j]
+            );
+            mapping.addQuery('active', true);
+            mapping.query();
+
+            while (mapping.next()) {
+
+                var offeringId =
+                    mapping.getValue('service_offering');
+
+                if (offeringId &&
+                    !offeringSeen['id:' + offeringId]) {
+
+                    offeringSeen['id:' + offeringId] = true;
+
+                    offerings.push({
+                        sysId: offeringId,
+                        name: mapping.getDisplayValue(
+                            'service_offering'
+                        )
+                    });
+                }
+            }
+        }
+
+        assessment.offerings = offerings;
+
+        if (offerings.length === 0) {
+
+            assessment.classification = 'unmapped';
+
+            assessment.reason =
+                'Currently degraded vendor components ' +
+                'have no active Service Offering mapping.';
+
+        } else {
+
+            assessment.classification = 'potential_impact';
+
+            assessment.reason =
+                'Currently degraded vendor components map ' +
+                'to internal Service Offerings. Internal ' +
+                'disruption has not been confirmed.';
+        }
+
+        if (uncertainIds.length > 0) {
+
+            assessment.reason +=
+                ' Other incident components have uncertain ' +
+                'status and require manual review.';
+        }
+
+        return assessment;
+    },
+
+    // =========================================================
+    // 8. Execute Incident action
+    // =========================================================
+    // Preview mode is the default.
+    // Pass {apply: true} to enable database writes.
+    //
+    // Major Incident proposal is deliberately separate.
+    // VendorStatusPoller invokes this when ITSM is enabled.
+    // =========================================================
+
+    executeIncidentAction: function(impact, risk, options) {
+
+        options = options || {};
+
+        var apply = options.apply === true;
+
+        var decision = this.determineOperationalAction(
+            impact, risk
+        );
+
+        var result = {
+            mode: apply ? 'execute' : 'preview',
+            operation: 'none',
+            incidentId: '',
+            incidentNumber: '',
+            targetPriority: decision.suggestedPriority,
+            actualPriority: '',
+            majorProposalPending:
+                decision.proposeMajorIncident === true,
+            requiresManualReview:
+                decision.requiresManualReview === true,
+            message: ''
+        };
+
+        // Require an assessment from the live snapshot.
+        if (!impact ||
+            impact.source !== 'live_summary' ||
+            decision.requiresCurrentComponentVerification) {
+
+            throw new Error(
+                'A verified live impact assessment is required'
+            );
+        }
+
+        var eligible =
+            decision.action === 'create_incident' ||
+            decision.action ===
+                'create_incident_and_propose_major';
+
+        if (!eligible) {
+            result.operation = 'no_action';
+            result.message = decision.reason;
+            return result;
+        }
+
+        var target = decision.suggestedPriority === 'P3'
+            ? 3
+            : decision.suggestedPriority === 'P2'
+                ? 2 : 0;
+
+        if (!target) {
+            throw new Error('Unsupported target priority');
+        }
+
+        // Locate the exact Vendor Outage.
+        var outage = new GlideRecord(
+            'x_1951923_outage_0_vendor_outage'
+        );
+
+        if (!outage.get(impact.outageSysId)) {
+            throw new Error('Vendor Outage not found');
+        }
+
+        if (outage.getValue('external_incident_id') !==
+            impact.externalIncidentId) {
+
+            throw new Error(
+                'Impact assessment references the wrong outage'
+            );
+        }
+
+        var savedStatus = String(
+            outage.getValue('status') || ''
+        ).toLowerCase();
+
+        if (savedStatus === 'resolved' ||
+            savedStatus === 'postmortem') {
+
+            throw new Error(
+                'Cannot execute against a resolved Vendor Outage'
+            );
+        }
+
+        var outageId = outage.getUniqueValue();
+
+        // Production correlation identifier.
+        var marker = 'OS:' + outageId;
+
+        // Also recognise our earlier controlled test marker.
+        var testMarker = 'OS-TEST:' + outageId;
+
+        var incident = new GlideRecord('incident');
+        var incidentId = outage.getValue('primary_incident');
+
+        var needsRelink = false;
+
+        // 1. Try the existing primary_incident reference.
+        if (incidentId) {
+
+            if (!incident.get(incidentId)) {
+                throw new Error(
+                    'Linked Incident is missing or inaccessible'
+                );
+            }
+
+        } else {
+
+            // 2. Recovery fallback: search correlation IDs.
+            var previous = new GlideRecord('incident');
+
+            previous.addQuery(
+                'correlation_id',
+                'IN',
+                marker + ',' + testMarker
+            );
+
+            previous.setLimit(2);
+            previous.query();
+
+            if (previous.next()) {
+
+                incidentId = previous.getUniqueValue();
+
+                if (previous.next()) {
+                    throw new Error(
+                        'Multiple correlated Incidents found'
+                    );
+                }
+
+                if (!incident.get(incidentId)) {
+                    throw new Error(
+                        'Correlated Incident cannot be loaded'
+                    );
+                }
+
+                needsRelink = true;
+            }
+        }
+
+        // =====================================================
+        // Existing Incident: reuse or escalate
+        // =====================================================
+
+        if (incidentId) {
+
+            result.incidentId = incidentId;
+            result.incidentNumber =
+                incident.getValue('number');
+
+            var currentPriority = parseInt(
+                incident.getValue('priority'), 10
+            );
+
+            result.actualPriority =
+                incident.getValue('priority');
+
+            if (isNaN(currentPriority)) {
+                throw new Error(
+                    'Existing Incident priority is not valid'
+                );
+            }
+
+            // Do not reopen closed/inactive incidents.
+            if (incident.getValue('active') === '0') {
+
+                result.operation = 'manual_review';
+                result.message =
+                    'Linked Incident is inactive. Review required.';
+
+                return result;
+            }
+
+            // Smaller priority number = higher priority.
+            var escalationRequired =
+                currentPriority > target;
+
+            if (!apply) {
+
+                result.operation = escalationRequired
+                    ? 'would_escalate'
+                    : 'would_reuse';
+
+                result.message =
+                    'Existing Incident: ' +
+                    result.incidentNumber +
+                    (needsRelink ? ' (link recovery needed)' : '');
+
+                return result;
+            }
+
+            if (needsRelink) {
+
+                outage.setValue(
+                    'primary_incident', incidentId
+                );
+
+                if (!outage.update()) {
+                    throw new Error(
+                        'Failed to restore primary Incident link'
+                    );
+                }
+            }
+
+            if (escalationRequired) {
+
+                // Confirmed instance lookup:
+                // Impact 2 + Urgency 1 = P2
+                // Impact 2 + Urgency 2 = P3
+                incident.setValue('impact', '2');
+                incident.setValue(
+                    'urgency',
+                    target === 2 ? '1' : '2'
+                );
+
+                incident.setValue(
+                    'work_notes',
+                    'Outage Shield automatic escalation. ' +
+                    'Current preliminary business risk: ' +
+                    decision.effectiveRisk +
+                    '. Target priority: P' + target +
+                    '. Vendor impact remains preliminary.'
+                );
+
+                if (!incident.update()) {
+                    throw new Error(
+                        'Incident priority escalation failed'
+                    );
+                }
+
+                incident.get(incidentId);
+
+                result.operation = 'escalated';
+                result.actualPriority =
+                    incident.getValue('priority');
+
+                result.message =
+                    'Existing Incident escalated as required.';
+
+            } else {
+
+                result.operation = 'reused';
+
+                result.message =
+                    'Existing priority retained; no downgrade.';
+            }
+
+            return result;
+        }
+
+        // =====================================================
+        // No existing Incident: prepare creation
+        // =====================================================
+
+        var groupId =
+            '447a32ba47085b105a3ab4fe316d433a';
+
+        var group = new GlideRecord('sys_user_group');
+
+        if (!group.get(groupId) ||
+            group.getValue('active') !== '1') {
+
+            throw new Error(
+                'Application Support group unavailable'
+            );
+        }
+
+        // Select the highest-risk known Service Offering.
+        var score = {
+            low: 1,
+            medium: 2,
+            high: 3,
+            very_high: 4
+        };
+
+        var selected = null;
+        var highest = 0;
+
+        var offerings = risk.offerings || [];
+
+        for (var i = 0; i < offerings.length; i++) {
+
+            var item = offerings[i];
+            var itemScore = score[item.risk] || 0;
+
+            if (itemScore > highest) {
+                highest = itemScore;
+                selected = item;
+            }
+        }
+
+        if (!selected) {
+            throw new Error(
+                'No valid affected Service Offering found'
+            );
+        }
+
+        var serviceOffering = new GlideRecord(
+            'service_offering'
+        );
+
+        if (!serviceOffering.get(selected.sysId)) {
+            throw new Error(
+                'Selected Service Offering does not exist'
+            );
+        }
+
+        if (!apply) {
+
+            result.operation = 'would_create';
+
+            result.message =
+                'Would create P' + target +
+                ' Incident for ' + selected.name;
+
+            return result;
+        }
+
+        // =====================================================
+        // Create native Incident
+        // =====================================================
+
+        var newIncident = new GlideRecord('incident');
+        newIncident.initialize();
+
+        var vendorName =
+            outage.getDisplayValue('vendor');
+
+        var title = outage.getValue('title') || '';
+        var externalId =
+            outage.getValue('external_incident_id');
+
+        newIncident.setValue(
+            'short_description',
+            (
+                'Potential vendor outage: ' +
+                vendorName + ' - ' + title
+            ).substring(0, 160)
+        );
+
+        var offeringNames = [];
+
+        for (var j = 0; j < offerings.length; j++) {
+            offeringNames.push(
+                offerings[j].name +
+                ' (' + offerings[j].risk + ')'
+            );
+        }
+
+        newIncident.setValue(
+            'description',
+            'Automatically identified by Outage Shield.\n\n' +
+            'Vendor: ' + vendorName + '\n' +
+            'Vendor incident: ' + externalId + '\n' +
+            'Vendor issue: ' + title + '\n' +
+            'Vendor severity: ' +
+                impact.vendorSeverity + '\n' +
+            'Preliminary business risk: ' +
+                decision.effectiveRisk + '\n' +
+            'Potentially affected offerings:\n' +
+                offeringNames.join('\n') + '\n\n' +
+            'Vendor reports a potentially relevant disruption. ' +
+            'Internal service impact has NOT been confirmed. ' +
+            'Investigate the actual business impact.'
+        );
+
+        newIncident.setValue(
+            'assignment_group', groupId
+        );
+
+        newIncident.setValue(
+            'service_offering', selected.sysId
+        );
+
+        // Default caller is the scheduled execution user.
+        // Caller can be overridden explicitly in options.
+        newIncident.setValue(
+            'caller_id',
+            options.callerId || gs.getUserID()
+        );
+
+        newIncident.setValue('impact', '2');
+        newIncident.setValue(
+            'urgency',
+            target === 2 ? '1' : '2'
+        );
+
+        newIncident.setValue('correlation_id', marker);
+
+        newIncident.setValue(
+            'work_notes',
+            'Outage Shield automated investigative Incident.\n' +
+            'Preliminary business risk: ' +
+                decision.effectiveRisk + '\n' +
+            'Requested priority: P' + target + '\n' +
+            'Assessment based on vendor-reported status. ' +
+            'Internal disruption is unconfirmed.'
+        );
+
+        var newId = newIncident.insert();
+
+        if (!newId) {
+            throw new Error('Incident insertion failed');
+        }
+
+        // Link immediately. If linking fails, the
+        // correlation marker enables recovery on retry.
+        outage.setValue('primary_incident', newId);
+
+        if (!outage.update()) {
+            throw new Error(
+                'Incident inserted, but linkage failed. ' +
+                'Check correlation_id before retrying.'
+            );
+        }
+
+        var created = new GlideRecord('incident');
+
+        if (!created.get(newId)) {
+            throw new Error(
+                'Created Incident could not be reloaded'
+            );
+        }
+
+        result.operation = 'created';
+        result.incidentId = newId;
+        result.incidentNumber =
+            created.getValue('number');
+        result.actualPriority =
+            created.getValue('priority');
+
+        if (parseInt(result.actualPriority, 10) !== target) {
+
+            result.message =
+                'Incident created and linked, but actual ' +
+                'priority differs from target. Review required.';
+
+        } else {
+
+            result.message =
+                'Incident created and linked successfully.';
+        }
+
+        return result;
+    },
+
+    // =========================================================
+    // 9. Submit native Major Incident proposal
+    // =========================================================
+    //
+    // Default: preview only.
+    // Use {apply: true} for actual proposal.
+    //
+    // Requires a Very High risk calculated from live
+    // vendor data and an existing linked Incident.
+    //
+    // Does not accept or declare a Major Incident.
+    // =========================================================
+
+    submitMajorIncidentProposal: function(
+        impact, risk, options
+    ) {
+
+        options = options || {};
+
+        var apply = options.apply === true;
+
+        var result = {
+            mode: apply ? 'execute' : 'preview',
+            operation: 'none',
+            incidentId: '',
+            incidentNumber: '',
+            majorIncidentState: '',
+            message: ''
+        };
+
+        // 1. Only live assessments are permitted.
+
+        if (!impact ||
+            impact.source !== 'live_summary') {
+
+            throw new Error(
+                'A live vendor impact assessment is required'
+            );
+        }
+
+        var decision = this.determineOperationalAction(
+            impact, risk
+        );
+
+        // 2. Require the actual Very High decision.
+
+        if (decision.action !==
+                'create_incident_and_propose_major' ||
+            decision.effectiveRisk !== 'very_high' ||
+            decision.proposeMajorIncident !== true ||
+            decision.requiresCurrentComponentVerification) {
+
+            result.operation = 'not_applicable';
+            result.message =
+                'Outage does not qualify for a Major ' +
+                'Incident proposal.';
+
+            return result;
+        }
+
+        // 3. Validate the risk assessment itself.
+
+        if (!risk ||
+            risk.outageSysId !== impact.outageSysId ||
+            String(risk.vendorSeverity).toLowerCase() !==
+                'critical' ||
+            !Array.isArray(risk.offerings)) {
+
+            throw new Error(
+                'Invalid Very High risk assessment'
+            );
+        }
+
+        var qualifyingOffering = null;
+
+        for (var i = 0; i < risk.offerings.length; i++) {
+
+            var offering = risk.offerings[i];
+
+            if (offering.risk === 'very_high' &&
+                offering.criticalityLevel === '1') {
+
+                qualifyingOffering = offering;
+                break;
+            }
+        }
+
+        if (!qualifyingOffering) {
+            throw new Error(
+                'No verified Very High Service Offering'
+            );
+        }
+
+        // 4. Load the matching Vendor Outage.
+
+        var outage = new GlideRecord(
+            'x_1951923_outage_0_vendor_outage'
+        );
+
+        if (!outage.get(impact.outageSysId)) {
+            throw new Error('Vendor Outage not found');
+        }
+
+        if (outage.getValue('external_incident_id') !==
+            impact.externalIncidentId) {
+
+            throw new Error('Vendor Outage identity mismatch');
+        }
+
+        var savedStatus = String(
+            outage.getValue('status') || ''
+        ).toLowerCase();
+
+        if (savedStatus !== 'investigating' &&
+            savedStatus !== 'identified') {
+
+            result.operation = 'manual_review';
+            result.message =
+                'Saved vendor status is not eligible for ' +
+                'automatic Major Incident proposal.';
+
+            return result;
+        }
+
+        // 5. Require the existing primary Incident.
+        // Creating the Incident is handled separately.
+
+        var incidentId =
+            outage.getValue('primary_incident');
+
+        if (!incidentId) {
+
+            result.operation = 'incident_required';
+            result.message =
+                'Create and link the investigative Incident ' +
+                'before submitting a Major Incident proposal.';
+
+            return result;
+        }
+
+        var inc = new GlideRecord('incident');
+
+        if (!inc.get(incidentId)) {
+            throw new Error(
+                'Linked Incident is missing or inaccessible'
+            );
+        }
+
+        result.incidentId = incidentId;
+        result.incidentNumber = inc.getValue('number');
+
+        // Ensure this is an Outage Shield-owned Incident.
+
+        var marker = inc.getValue('correlation_id');
+
+        if (marker !== 'OS:' + impact.outageSysId &&
+            marker !== 'OS-TEST:' + impact.outageSysId) {
+
+            result.operation = 'manual_review';
+            result.message =
+                'Linked Incident is not identified as an ' +
+                'Outage Shield-created Incident.';
+
+            return result;
+        }
+
+        if (inc.getValue('active') === '0') {
+
+            result.operation = 'manual_review';
+            result.message = 'Linked Incident is inactive.';
+
+            return result;
+        }
+
+        // Incident should already be at P2 or higher.
+
+        var priority = parseInt(
+            inc.getValue('priority'), 10
+        );
+
+        if (isNaN(priority) || priority > 2) {
+
+            result.operation = 'priority_review';
+            result.message =
+                'Escalate the existing Incident to the ' +
+                'appropriate priority before proposing Major.';
+
+            return result;
+        }
+
+        // 6. Check previous Major Incident decisions.
+
+        var majorState =
+            inc.getValue('major_incident_state') || '';
+
+        result.majorIncidentState = majorState;
+
+        if (majorState === 'proposed') {
+
+            result.operation = 'already_proposed';
+            result.message =
+                'Incident is already a Major Incident candidate.';
+
+            return result;
+        }
+
+        if (majorState === 'accepted') {
+
+            result.operation = 'already_accepted';
+            result.message =
+                'Incident has already been accepted as Major.';
+
+            return result;
+        }
+
+        if (majorState === 'rejected' ||
+            majorState === 'canceled' ||
+            majorState) {
+
+            result.operation = 'manual_review';
+            result.message =
+                'Existing Major Incident decision must ' +
+                'not be automatically overridden.';
+
+            return result;
+        }
+
+        // 7. Use native ServiceNow proposal eligibility.
+
+        var rules =
+            new sn_major_inc_mgmt.MajorIncidentTriggerRules(
+                inc
+            );
+
+        if (!rules.canProposeMIC()) {
+
+            result.operation = 'not_eligible';
+            result.message =
+                'Native Major Incident rules do not ' +
+                'permit proposal for this Incident.';
+
+            return result;
+        }
+
+        // 8. Preview: stop before making any changes.
+
+        if (!apply) {
+
+            result.operation = 'would_propose';
+            result.message =
+                'Incident is eligible for native ' +
+                'Major Incident proposal.';
+
+            return result;
+        }
+
+        // 9. Submit the native proposal.
+        // The installed UI Action uses this same field
+        // and value to initiate the proposal lifecycle.
+
+        inc.setValue(
+            'major_incident_state',
+            'proposed'
+        );
+
+        inc.setValue(
+            'work_notes',
+            'OUTAGE SHIELD - MAJOR INCIDENT PROPOSAL\n\n' +
+            'Preliminary business risk: Very High\n' +
+            'Vendor incident severity: Critical\n' +
+            'Affected Service Offering: ' +
+                qualifyingOffering.name + '\n' +
+            'Service Offering criticality: 1 - Most critical\n' +
+            'Vendor incident: ' +
+                impact.externalIncidentId + '\n\n' +
+            'Vendor-reported disruption creates potentially ' +
+            'serious business exposure. Actual internal ' +
+            'disruption has not yet been confirmed.\n\n' +
+            'Submitted for authorised Major Incident assessment.'
+        );
+
+        if (!inc.update()) {
+            throw new Error(
+                'Native Major Incident proposal update failed'
+            );
+        }
+
+        // 10. Verify the persisted proposal state.
+
+        if (!inc.get(incidentId)) {
+            throw new Error(
+                'Could not reload proposed Incident'
+            );
+        }
+
+        result.majorIncidentState =
+            inc.getValue('major_incident_state');
+
+        if (result.majorIncidentState !== 'proposed') {
+
+            result.operation = 'verification_failed';
+            result.message =
+                'Incident was updated but proposal state ' +
+                'was not retained. Manual review required.';
+
+            return result;
+        }
+
+        result.operation = 'proposed';
+        result.message =
+            'Major Incident candidate submitted for review.';
+
+        return result;
+    },
+
+
+
+    type: 'VendorOutageProcessor'
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2026-10-26 13:16:42</sys_created_on>
+        <sys_id>a9ec512b47cc53105a3ab4fe316d4305</sys_id>
+        <sys_mod_count>19</sys_mod_count>
+        <sys_name>VendorOutageProcessor</sys_name>
+        <sys_package display_value="Outage Shield" source="x_1951923_outage_0">f0f338824780d3105a3ab4fe316d43c3</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="Outage Shield">f0f338824780d3105a3ab4fe316d43c3</sys_scope>
+        <sys_update_name>sys_script_include_a9ec512b47cc53105a3ab4fe316d4305</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2026-10-31 18:06:56</sys_updated_on>
+    </sys_script_include>
+</record_update>
