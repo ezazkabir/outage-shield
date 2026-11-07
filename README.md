@@ -62,21 +62,22 @@ These decisions helped me explore the balance between useful automation and oper
 
 I tested the application using live vendor API polling in monitoring-only mode and controlled scenarios for Incident automation.
 
+
 The validation covered:
 
-- Medium-risk Incident creation (P3).
-- High-risk Incident creation (P2).
-- Incident reuse and priority escalation.
-- Recovery handling.
-- Native Major Incident proposals.
-- Missing service mappings and conflicting evidence.
-- Invalid API responses.
+- Live GitHub and Cloudflare API polling and processing.
+- Vendor component mapping to Service Offerings and business-risk assessment.
+- Controlled Incident creation, primary-Incident reuse and P3-to-P2 escalation.
+- Native Major Incident proposals for human review.
+- Four safeguard tests covering unmapped, conflicting, missing and invalid data.
+- Subscriber event generation and queued outbound email records.
+
 
 **Results:** The controlled Incident and Major Incident scenarios passed, including all 4 safeguard tests.
 
 The published case study includes screenshots, test results and a detailed validation report.
 
-**[View Test Evidence](https://ezazkabir.com/projects/outage-shield/)**
+**[View Test Evidence](https://ezazkabir.com/projects/outage-shield/#evidence)**
 
 ## Repository Structure
 
